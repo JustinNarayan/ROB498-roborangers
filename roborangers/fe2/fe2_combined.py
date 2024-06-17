@@ -31,12 +31,11 @@ from roborangers.utils.pose_utils import compute_average_pose
 ###############################################
 
 USING_REALSENSE = False
-LAUNCH_IMMEDIATELY = False
 DRONE_ID = 'rob498_drone_06'
 VICON_TOPIC_NAME = '/vicon/ROB498_Drone/ROB498_Drone' # check via `ros2 topic list`
 REALSENSE_TOPIC_NAME = '/camera/pose/sample'
 INIT_VISION_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose
-TARGET_HEIGHT = 0.5 # meters
+TARGET_HEIGHT = 1.5 # meters
 QOS_DEPTH = 10 # number of messages to store
 COMMAND_RATE = 20 # Hz, recommended in procedure.md
 OFFBOARD_MODE = 'OFFBOARD'
@@ -68,7 +67,6 @@ class CommNode(Node):
         
         ### Command variables
         self.drone_flight_commanded = False
-        self.drone_flight_test_commanded = False
         
         ### MAVROS State variables
         self.current_mavros_state = State()
@@ -255,15 +253,9 @@ class CommNode(Node):
             # Construct target hover
             target_hover_pose = PoseStamped()
             target_hover_pose.header.frame_id = 'map'
-            target_hover_pose.pose.position.x = self.vision_state.init_vision_pose.pose.position.x
-            target_hover_pose.pose.position.y = self.vision_state.init_vision_pose.pose.position.y
-            target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z
-            target_hover_pose.pose.orientation.x = self.vision_state.init_vision_pose.pose.orientation.x
-            target_hover_pose.pose.orientation.y = self.vision_state.init_vision_pose.pose.orientation.y
-            target_hover_pose.pose.orientation.z = self.vision_state.init_vision_pose.pose.orientation.z
-            target_hover_pose.pose.orientation.w = self.vision_state.init_vision_pose.pose.orientation.w
-            if self.drone_flight_test_commanded or LAUNCH_IMMEDIATELY:
-                target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z + TARGET_HEIGHT
+            target_hover_pose.pose = self.vision_state.init_vision_pose.pose
+            if self.drone_flight_test_commanded:
+                target_hover_pose.pose.position.z += TARGET_HEIGHT
             
             # Publish hover setpoint
             # This must be published BEFORE offboard mode is enabled (dummy setpoints would suffice)

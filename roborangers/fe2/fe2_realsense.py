@@ -30,13 +30,10 @@ from roborangers.utils.pose_utils import compute_average_pose
 #              C O N S T A N T S              #
 ###############################################
 
-USING_REALSENSE = False
-LAUNCH_IMMEDIATELY = False
 DRONE_ID = 'rob498_drone_06'
-VICON_TOPIC_NAME = '/vicon/ROB498_Drone/ROB498_Drone' # check via `ros2 topic list`
 REALSENSE_TOPIC_NAME = '/camera/pose/sample'
-INIT_VISION_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose
-TARGET_HEIGHT = 0.5 # meters
+INIT_REALSENSE_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose
+TARGET_HEIGHT = 1.5 # meters
 QOS_DEPTH = 10 # number of messages to store
 COMMAND_RATE = 20 # Hz, recommended in procedure.md
 OFFBOARD_MODE = 'OFFBOARD'
@@ -45,15 +42,15 @@ DEBUGGING_LOOP_LOGS = False
 DEBUGGING_POSE = False
 
 ###############################################
-#            V I C O N   S T A T E            #
+#    R E A L S E N S E   S T A T E            #
 ###############################################
 
-class VisionState:
+class RealsenseState:
     def __init__(self):
-        # Drone vision data 
-        self.init_vision_pose_list = []  # List of PoseStamped for averaging
-        self.init_vision_pose = None     # PoseStamped after averaging
-        self.current_vision_pose = PoseStamped()
+        # Drone realsense data 
+        self.init_realsense_pose_list = []  # List of PoseStamped for averaging
+        self.init_realsense_pose = None     # PoseStamped after averaging
+        self.current_realsense_pose = PoseStamped() # w.r.t. init_realsense_pose
 
 ###############################################
 #         C O M M U N I C A T I O N S         #
@@ -63,12 +60,11 @@ class CommNode(Node):
     def __init__(self):
         super().__init__(DRONE_ID)
         
-        ### VISION data
-        self.vision_state = VisionState()
+        ### realsense data
+        self.realsense_state = RealsenseState()
         
         ### Command variables
-        self.drone_flight_commanded = False
-        self.drone_flight_test_commanded = False
+        self.drone_flight_commanded = False # should try to hover
         
         ### MAVROS State variables
         self.current_mavros_state = State()
@@ -91,27 +87,19 @@ class CommNode(Node):
             Trigger, f'{DRONE_ID}/comm/abort', self.callback_abort
         )
         
-        ### VISION
-        if USING_REALSENSE:
-            # Drone subscribes to Camera pose
-            qos_camera_pose = QoSProfile(depth=QOS_DEPTH)
-            qos_camera_pose.reliability = ReliabilityPolicy.BEST_EFFORT
-            self.sub_camera_pose = self.create_subscription(
-                Odometry, 
-                REALSENSE_TOPIC_NAME, 
-                self.callback_camera_pose, 
-                qos_camera_pose
-            )
-        else:
-            # Drone subscribes to vision pose
-            qos_vicon_pose = QoSProfile(depth=QOS_DEPTH)
-            qos_vicon_pose.reliability = ReliabilityPolicy.BEST_EFFORT
-            self.sub_vicon_pose = self.create_subscription(
-                PoseStamped, 
-                VICON_TOPIC_NAME, 
-                self.callback_vicon_pose, 
-                qos_vicon_pose
-            )
+        ### realsense
+        # Drone subscribes to realsense pose
+        qos_realsense_pose = QoSProfile(depth=QOS_DEPTH)
+        qos_realsense_pose.reliability = ReliabilityPolicy.BEST_EFFORT
+        # self.sub_realsense_pose = self.create_subscription(
+        #     Odometry, REALSENSE_TOPIC_NAME, self.callback_realsense_pose, qos_realsense_pose
+        # )
+        self.sub_realsense_pose = self.create_subscription(
+            Odometry,
+            '/camera/pose/sample',
+            self.callback_realsense_pose,
+            qos_realsense_pose
+        )
         
         ### MAVROS
         # Drone subscribes to MAVROS state
@@ -124,7 +112,7 @@ class CommNode(Node):
         self.pub_mavros_setpoint = self.create_publisher(
             PoseStamped, '/mavros/setpoint_position/local', qos_mavros_setpoint
         )
-        # Drone publishes Vision pose to vision EKF source for Cube
+        # Drone publishes realsense pose to vision EKF source for Cube
         qos_mavros_vision_pose = QoSProfile(depth=QOS_DEPTH)
         self.pub_mavros_vision_pose = self.create_publisher(
             PoseStamped, '/mavros/vision_pose/pose', qos_mavros_vision_pose
@@ -177,17 +165,11 @@ class CommNode(Node):
     ) -> Trigger.Response:
         return self.handle_abort(request, response)
 
-    def callback_vicon_pose(
+    def callback_realsense_pose(
         self, 
         msg: Odometry
     ) -> None:
-        self.handle_vicon_pose(msg)
-    
-    def callback_camera_pose(
-        self, 
-        msg: Odometry
-    ) -> None:
-        self.handle_camera_pose(msg)
+        self.handle_realsense_pose(msg)
 
     def callback_mavros_state(
         self, 
@@ -232,13 +214,13 @@ class CommNode(Node):
         if DEBUGGING_LOOP_LOGS:
             self.get_logger().info('Control loop!')
             
-        # Redirect received vision data to mavros
-        redirected_pose = self.vision_state.current_vision_pose
+        # Redict received realsense data to mavros
+        redirected_pose = self.realsense_state.current_realsense_pose
         redirected_pose.header.frame_id = 'map'
         self.pub_mavros_vision_pose.publish(redirected_pose)
         
         # Ensure initial pose has been calibrated
-        if self.vision_state.init_vision_pose is None:
+        if self.realsense_state.init_realsense_pose is None:
             return
         
         # Check MAVROS state flags
@@ -253,17 +235,9 @@ class CommNode(Node):
         # Check if drone should fly
         if self.drone_flight_commanded:
             # Construct target hover
-            target_hover_pose = PoseStamped()
+            target_hover_pose = PoseStamped() #self.realsense_state.current_realsense_pose
             target_hover_pose.header.frame_id = 'map'
-            target_hover_pose.pose.position.x = self.vision_state.init_vision_pose.pose.position.x
-            target_hover_pose.pose.position.y = self.vision_state.init_vision_pose.pose.position.y
-            target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z
-            target_hover_pose.pose.orientation.x = self.vision_state.init_vision_pose.pose.orientation.x
-            target_hover_pose.pose.orientation.y = self.vision_state.init_vision_pose.pose.orientation.y
-            target_hover_pose.pose.orientation.z = self.vision_state.init_vision_pose.pose.orientation.z
-            target_hover_pose.pose.orientation.w = self.vision_state.init_vision_pose.pose.orientation.w
-            if self.drone_flight_test_commanded or LAUNCH_IMMEDIATELY:
-                target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z + TARGET_HEIGHT
+            # target_hover_pose.pose.position.z = TARGET_HEIGHT
             
             # Publish hover setpoint
             # This must be published BEFORE offboard mode is enabled (dummy setpoints would suffice)
@@ -304,7 +278,7 @@ class CommNode(Node):
         self.get_logger().info('Launch Requested.')
         
         # Ensure pose has been initialized
-        if self.vision_state.init_vision_pose is None:
+        if self.realsense_state.init_realsense_pose is None:
             response.success = False
             response.message = "Init pose still calculating!"
         else:
@@ -319,7 +293,6 @@ class CommNode(Node):
         response: Trigger.Response
     ) -> Trigger.Response:
         self.get_logger().info('Test Requested.')
-        self.drone_flight_test_commanded = True
         return response
 
     def handle_land(
@@ -329,7 +302,6 @@ class CommNode(Node):
     ) -> Trigger.Response:
         self.get_logger().info('Land Requested.')
         self.drone_flight_commanded = False
-        self.drone_flight_test_commanded = False
         response.success = True
         return response
 
@@ -341,74 +313,43 @@ class CommNode(Node):
         self.get_logger().info('Abort Requested.')
         # Same behaviour as landing
         self.drone_flight_commanded = False
-        self.drone_flight_test_commanded = False
         response.success = True
         return response
 
-    def handle_camera_pose(
+    def handle_realsense_pose(
         self, 
         msg: Odometry
     ) -> None:
         if DEBUGGING_LOOP_LOGS:
-            self.get_logger().info('Camera received!')
+            self.get_logger().info('realsense received!')
             
         new_message = PoseStamped()
         new_message.header.stamp = msg.header.stamp
         new_message.header.frame_id = msg.header.frame_id
         new_message.pose = msg.pose.pose
             
-        # Store initial poses to compute neutral init_vision_pose
-        if len(self.vision_state.init_vision_pose_list) < INIT_VISION_POSE_COUNT_MAX:
-            self.vision_state.init_vision_pose_list.append(new_message)
+        # Store initial poses to compute neutral init_realsense_pose
+        if len(self.realsense_state.init_realsense_pose_list) < INIT_REALSENSE_POSE_COUNT_MAX:
+            self.realsense_state.init_realsense_pose_list.append(new_message)
             # Compute init after receiving enough
-            if len(self.vision_state.init_vision_pose_list) == INIT_VISION_POSE_COUNT_MAX:
-                self.vision_state.init_vision_pose = compute_average_pose(
-                    self.vision_state.init_vision_pose_list
+            if len(self.realsense_state.init_realsense_pose_list) == INIT_REALSENSE_POSE_COUNT_MAX:
+                self.realsense_state.init_realsense_pose = compute_average_pose(
+                    self.realsense_state.init_realsense_pose_list
                 )
-                self.get_logger().info('Initial Pose Computed!')
+                self.get_logger().info('Average Pose Computed!')
         
         # Current pose is offset from the init
-        self.vision_state.current_vision_pose = new_message
+        self.realsense_state.current_realsense_pose = new_message
         
         if DEBUGGING_POSE:
             self.get_logger().info(f'\
-                (x:{self.vision_state.current_vision_pose.pose.position.x}, \
-                y:{self.vision_state.current_vision_pose.pose.position.y}, \
-                z:{self.vision_state.current_vision_pose.pose.position.x}),\
-                (x:{self.vision_state.current_vision_pose.pose.orientation.x},\
-                y:{self.vision_state.current_vision_pose.pose.orientation.y},\
-                z:{self.vision_state.current_vision_pose.pose.orientation.z},\
-                w:{self.vision_state.current_vision_pose.pose.orientation.w})')
-            
-    def handle_vicon_pose(
-        self, 
-        msg: PoseStamped
-    ) -> None:
-        if DEBUGGING_LOOP_LOGS:
-            self.get_logger().info('Vicon received!')
-            
-        # Store initial poses to compute neutral init_vicon_pose
-        if len(self.vision_state.init_vision_pose_list) < INIT_VISION_POSE_COUNT_MAX:
-            self.vision_state.init_vision_pose_list.append(msg)
-            # Compute init after receiving enough
-            if len(self.vision_state.init_vision_pose_list) == INIT_VISION_POSE_COUNT_MAX:
-                self.vision_state.init_vision_pose = compute_average_pose(
-                    self.vision_state.init_vision_pose_list
-                )
-                self.get_logger().info('Initial Pose Computed!')
-        
-        # Current pose is offset from the init
-        self.vision_state.current_vision_pose = msg
-        
-        if DEBUGGING_POSE:
-            self.get_logger().info(f'\
-                (x:{self.vision_state.current_vision_pose.pose.position.x}, \
-                y:{self.vision_state.current_vision_pose.pose.position.y}, \
-                z:{self.vision_state.current_vision_pose.pose.position.x}),\
-                (x:{self.vision_state.current_vision_pose.pose.orientation.x},\
-                y:{self.vision_state.current_vision_pose.pose.orientation.y},\
-                z:{self.vision_state.current_vision_pose.pose.orientation.z},\
-                w:{self.vision_state.current_vision_pose.pose.orientation.w})')
+                (x:{self.realsense_state.current_realsense_pose.pose.position.x}, \
+                y:{self.realsense_state.current_realsense_pose.pose.position.y}, \
+                z:{self.realsense_state.current_realsense_pose.pose.position.x}),\
+                (x:{self.realsense_state.current_realsense_pose.pose.orientation.x},\
+                y:{self.realsense_state.current_realsense_pose.pose.orientation.y},\
+                z:{self.realsense_state.current_realsense_pose.pose.orientation.z},\
+                w:{self.realsense_state.current_realsense_pose.pose.orientation.w})')
 
     def handle_mavros_state(
         self, 

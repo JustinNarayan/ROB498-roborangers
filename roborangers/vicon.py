@@ -6,16 +6,16 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-class CameraPoseForward(Node):
+class ViconPoseForward(Node):
     def __init__(self):
-        super().__init__('camera_pose_forward')
+        super().__init__('vicon_pose_forward')
         qos_profile = QoSProfile(depth=10)
         qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
         
         self.subscription = self.create_subscription(
-            Odometry,
-            '/camera/pose/sample',
-            self.pose_callback,
+            PoseStamped,
+            '/vicon/ROB498_Drone/ROB498_Drone',
+            self.vicon_callback,
             qos_profile
         )
         self.publisher = self.create_publisher(
@@ -28,24 +28,25 @@ class CameraPoseForward(Node):
         )
         self.get_logger().info('camera_pose_forward node started')
         
-    def pose_callback(self, msg):
-        self.get_logger().info("pose callback")
+    def vicon_callback(self, msg):
         new_message = PoseStamped()
         new_message.header.stamp = msg.header.stamp
-        new_message.header.frame_id = msg.header.frame_id
-        new_message.pose = msg.pose.pose
+        new_message.header.frame_id = 'map'
+        new_message.pose = msg.pose
         self.publisher.publish(new_message)
         
         target_hover_pose = PoseStamped()
+        target_hover_pose.header.stamp = msg.header.stamp
         target_hover_pose.header.frame_id = 'map'
-        target_hover_pose.pose.position.z = 1.5
+        target_hover_pose.pose.position.x = -81.0
+        target_hover_pose.pose.position.y = 655.0
+        target_hover_pose.pose.position.z = 0.0
+        
         self.pub_mavros_setpoint.publish(target_hover_pose)
-        
-        
         
 def main(args=None):
     rclpy.init(args=args)
-    node = CameraPoseForward()
+    node = ViconPoseForward()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
