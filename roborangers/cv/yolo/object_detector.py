@@ -37,7 +37,7 @@ class CentroidDepthPublisher(Node):
         self._depth_node = depth_node
 
         # --- Parameters ---
-        self.declare_parameter('publish_topic', '/vision/centroid_3d')
+        self.declare_parameter('publish_topic', '/rob498_drone_6/target/pose')
         self.declare_parameter('centroid_topic', '/vision/target_centroid')
         self.declare_parameter('camera_info_topic', '/camera/fisheye1/camera_info')
         self.declare_parameter('publish_frame_id', 'camera_fisheye1_optical_frame')
