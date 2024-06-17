@@ -11,7 +11,9 @@ Upon creation of a new node, make sure to add it in CMakeLists.txt
 (3) Type `source install/setup.bash`
 
 ## Running
-Package is `roborangers`.
+Package is 
+
+`roborangers`.
 After executing the "Building" steps:
 (1) `ros2 run roborangers realsense.py` or similar
 (2) `ros2 launch roborangers mavros.launch.py` or similar
@@ -26,17 +28,6 @@ From workspace root:
 
 ### Standalone detector test
 `python3 roborangers/yolo/imx219_yolov5_onnx.py --model /absolute/path/to/best.onnx --class-names /absolute/path/to/classes.txt --input-size 640 --conf 0.35 --iou 0.45`
-
-### Quick pretrained YOLOv5 video check (no training)
-This runs pretrained COCO weights and draws bounding boxes + centroids.
-
-(1) `pip install ultralytics`
-(2) `python3 roborangers/opencv/yolov5_video_inference.py`
-
-Optional examples:
-- `python3 roborangers/opencv/yolov5_video_inference.py --video roborangers/opencv/videos/nvcamtest_10192_s00_00000.mp4`
-- `python3 roborangers/opencv/yolov5_video_inference.py --all-classes`
-- `python3 roborangers/opencv/yolov5_video_inference.py --save /tmp/yolo_preview.mp4`
 
 ### ROS2 centroid node
 `ros2 run roborangers centroid_detector_node.py --ros-args -p model_path:=/absolute/path/to/best.onnx -p class_names_path:=/absolute/path/to/classes.txt -p target_class_name:=rc_car -p display:=true`
