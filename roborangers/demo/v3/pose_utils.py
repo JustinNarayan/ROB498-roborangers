@@ -287,13 +287,13 @@ def transform_cv_target_to_world_frame(
     
     # Rotation: From cam to fisheye
     # The camera frame is as follows:
-    # cam-X = left (body +Y)
-    # cam-Y = up (body +Z)
+    # cam-X = right (body -Y)
+    # cam-Y = down (body -Z)
     # cam-Z = forward (body +X)
     R_cv_to_cam = np.array([
-        [0.0, 0.0, 1.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
+        [ 0.0,  0.0,  1.0],
+        [-1.0,  0.0,  0.0],
+        [ 0.0, -1.0,  0.0],
     ])
     T_cv_to_cam = np.eye(4)
     T_cv_to_cam[:3, :3] = R_cv_to_cam
