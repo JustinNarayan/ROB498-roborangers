@@ -2,6 +2,8 @@ from geometry_msgs.msg import PoseStamped, Pose
 from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_multiply, quaternion_conjugate, quaternion_from_matrix
 import numpy as np
 
+from constants import CURRENT_TARGET_TYPE, TargetType, NET_OFFSET_ALONG_X_FOR_TARGET_IN_VICON
+
 ###############################################
 #         P O S E   U T I L I T I E S         #
 ###############################################
@@ -484,6 +486,8 @@ def compute_overhead_pose(
     PoseStamped with the drone origin setpoint that places the net overhead.
     """
     tx = target_pose.pose.position.x
+    if CURRENT_TARGET_TYPE is TargetType.VICON:
+        tx += NET_OFFSET_ALONG_X_FOR_TARGET_IN_VICON # car must be facing -x
     ty = target_pose.pose.position.y
     tz = target_pose.pose.position.z
 

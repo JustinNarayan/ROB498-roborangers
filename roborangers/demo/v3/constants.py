@@ -33,7 +33,7 @@ CURRENT_TARGET_TYPE = TargetType.VICON
 CV_VICON_POSITION_AGREEMENT_THRESHOLD = 0.3  # m
 
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
-MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 3.0  # m  — beyond this the geo-fence triggers
+MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 3.5  # m  — beyond this the geo-fence triggers
 
 COMMAND_RATE = 50 # Hz
 SUCCESS_RADIUS = 0.3 # m
@@ -88,7 +88,7 @@ TARGET_CLOSE_ENOUGH_RADIUS = 1.2 # m
 
 # Maximum allowed x/y distance (m) from the drone to the target before tracking is refused.
 # Prevents erroneous CV detections from sending the drone far away.
-MAX_TRACKING_DISTANCE = 2.0  # m
+MAX_TRACKING_DISTANCE = 3.0  # m
 
 # Rate at which the target pose simulator publishes (Hz)
 TARGET_SIM_PUBLISH_RATE = 2  # Hz
@@ -109,7 +109,9 @@ TRACKING_MOVE_TO_TRACK = True
 # These offsets are applied in OVERHEAD mode so the *net* is positioned
 # directly above the target rather than the drone origin.
 NET_OFFSET_X = 0.14
-NET_OFFSET_Y = 0.14
+NET_OFFSET_Y = -0.14
+NET_OFFSET_ALONG_X_FOR_TARGET_IN_VICON = 0.12
+OVERHEAD_HOVER_ABOVE = 0.75 # m
 
 ###############################################
 #              R O S   C O M M S              #

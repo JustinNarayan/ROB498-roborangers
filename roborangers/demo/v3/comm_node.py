@@ -30,7 +30,7 @@ from constants import (
     TEST_SERVICE_NAME, OVERHEAD_SERVICE_NAME,
     MAVROS_STATE_TOPIC_NAME, MAVROS_SETPOINT_TOPIC_NAME, MAVROS_VISION_POSE_TOPIC_NAME,
     QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE,
-    TARGET_STANDOFF_RADIUS, TARGET_CLOSE_ENOUGH_RADIUS, TARGET_HOVER_ABOVE, MAX_TRACKING_DISTANCE,
+    TARGET_STANDOFF_RADIUS, TARGET_CLOSE_ENOUGH_RADIUS, TARGET_HOVER_ABOVE, OVERHEAD_HOVER_ABOVE, MAX_TRACKING_DISTANCE,
     DEBUG_VISION_DIVERGENCE,
     DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME,
     DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME,
@@ -274,7 +274,7 @@ class CommNode(HandlersMixin, Node):
             if target is not None and self._overhead_entry_yaw is not None:
                 return compute_overhead_pose(
                     target,
-                    TARGET_HOVER_ABOVE,
+                    OVERHEAD_HOVER_ABOVE,
                     NET_OFFSET_X,
                     NET_OFFSET_Y,
                     self._overhead_entry_yaw,
