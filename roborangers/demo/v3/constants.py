@@ -76,8 +76,11 @@ SURVEY_STEP_HOLD_TIME_NANOSECONDS = 2e9  # 2 seconds per step
 #          T A R G E T   T R A C K I N G      #
 ###############################################
 
+# How long to hold a rotate only pose
+TARGET_HOLD_ROTATE_ONLY = 3e9 # 3 seconds
+
 # How long a received target pose is considered valid (nanoseconds)
-TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
+TARGET_STALENESS_THRESHOLD_NANOSECONDS = 2e9  # 2 seconds
 
 # Desired height above the target object (m)
 TARGET_HOVER_ABOVE = 0.5 # m

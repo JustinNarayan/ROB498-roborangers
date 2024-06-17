@@ -93,6 +93,7 @@ class CommNode(HandlersMixin, Node):
         self.current_mavros_state   = State()
         self.has_got_to_offboard    = False
         self.last_tracking_pose     = None
+        self.time_entered_tracking  = None
         self._geo_fence_hold_pose: PoseStamped = None
 
         ### OVERHEAD state: capture the drone's yaw when entering so it stays level
@@ -215,6 +216,11 @@ class CommNode(HandlersMixin, Node):
     # ------------------------------------------------------------------
     # Continuous output for drone's navigational target
     # ------------------------------------------------------------------
+    
+    def get_time_in_tracking(self):
+        if self.time_entered_tracking is None:
+            return 0
+        return self.get_clock().now().nanoseconds - self.time_entered_tracking
 
     def get_current_setpoint(self) -> PoseStamped:
         """
@@ -247,7 +253,10 @@ class CommNode(HandlersMixin, Node):
                     )
                     return self.vision_state.current_vision_pose
 
-                if not TRACKING_MOVE_TO_TRACK:
+                if (
+                    (not TRACKING_MOVE_TO_TRACK) or
+                    (self.get_time_in_tracking() < TARGET_HOLD_ROTATE_ONLY)
+                ):
                     # Rotate-only mode: hold home position, rotate to face target
                     return rotate_only_tracking_pose(
                         self.vision_state.init_vision_pose,
@@ -480,6 +489,12 @@ class CommNode(HandlersMixin, Node):
         else:
             # Reset survey when leaving the state so it starts fresh next time
             self.survey_state.reset()
+        
+        # Manage time in tracking
+        if self.mission_state == MissionState.TRACKING_TARGET:
+            self.time_entered_tracking = self.get_clock().now().nanoseconds
+        else:
+            self.time_entered_tracking = None
 
         # Capture entry yaw when entering OVERHEAD
         if self.mission_state == MissionState.OVERHEAD:
