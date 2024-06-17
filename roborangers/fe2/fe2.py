@@ -31,10 +31,11 @@ from roborangers.utils.pose_utils import compute_average_pose, subtract_poses, d
 #              C O N S T A N T S              #
 ###############################################
 
-USING_REALSENSE = True
+USING_REALSENSE = False
 LAUNCH_IMMEDIATELY = True
 APPLY_VICON_TRANSFORMATION = False
 APPLY_CAMERA_TRANSFORMATION = True
+MANUAL_LAND_TEST = True
 
 # Emergency Land
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 1.5 # m
@@ -80,7 +81,7 @@ class CommNode(Node):
         else:
             self.TARGET_HEIGHT = 0.5
                 
-        self.MANUAL_LAND_TEST = False
+        self.has_got_to_offboard = False
         
         ### VISION data
         self.vision_state = VisionState()
@@ -156,12 +157,12 @@ class CommNode(Node):
             Float32, f'{DRONE_ID}/target', self.callback_target_height_adjust, qos_target_height
         )
         
-        # Set MANUAL_LAND_TEST for demonstation
-        qos_manual_land = QoSProfile(depth=QOS_DEPTH)
-        qos_manual_land.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.target_height_adjust = self.create_subscription(
-            Bool, f'{DRONE_ID}/manual_land', self.callback_manual_land, qos_manual_land
-        )
+        # # Set MANUAL_LAND_TEST for demonstation
+        # qos_manual_land = QoSProfile(depth=QOS_DEPTH)
+        # qos_manual_land.reliability = ReliabilityPolicy.BEST_EFFORT
+        # self.target_height_adjust = self.create_subscription(
+        #     Bool, f'{DRONE_ID}/manual_land', self.callback_manual_land, qos_manual_land
+        # )
         
         ### MAVROS Clients
         # Generate callbacks to communicate over MAVROS
@@ -234,11 +235,11 @@ class CommNode(Node):
     ) -> None:
         self.TARGET_HEIGHT = float(msg.data)
     
-    def callback_manual_land(
-        self,
-        msg: Bool
-    ) -> None:
-        self.MANUAL_LAND_TEST = msg.data
+    # def callback_manual_land(
+    #     self,
+    #     msg: Bool
+    # ) -> None:
+    #     self.MANUAL_LAND_TEST = msg.data
         
     '''
     Client request commands
@@ -338,13 +339,22 @@ class CommNode(Node):
                 return # Wait till next loop
             
             # Enable offboard control if not yet in offboard control
-            if not _is_offboard and not self.MANUAL_LAND_TEST:
+            _should_not_force_to_offboard = MANUAL_LAND_TEST and self.has_got_to_offboard
+            if (
+                not _is_offboard and # not currently in offboard
+                not _should_not_force_to_offboard # NOT (need to get into offboard)
+            ):
                 self.request_offboard_mode()
                 return # Wait till next loop
+            else:
+                self.has_got_to_offboard = True
             
             if DEBUGGING_LOOP_LOGS:
                 self.get_logger().info('Ready!')
         else:
+            # Reset got to offboard check
+            self.has_got_to_offboard = False
+            
             # Land, if armed and in offboard mode
             if _is_armed:
                 self.request_land()
