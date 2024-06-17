@@ -108,8 +108,8 @@ TRACKING_MOVE_TO_TRACK = True
 #   +X = drone forward, +Y = drone left, +Z = drone up
 # These offsets are applied in OVERHEAD mode so the *net* is positioned
 # directly above the target rather than the drone origin.
-NET_OFFSET_X = 0.10   # 10 cm forward along drone body +X
-NET_OFFSET_Y = 0.05   # 5  cm left   along drone body +Y
+NET_OFFSET_X = 0.14
+NET_OFFSET_Y = 0.14
 
 ###############################################
 #              R O S   C O M M S              #

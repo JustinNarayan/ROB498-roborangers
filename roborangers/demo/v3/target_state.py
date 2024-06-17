@@ -35,8 +35,8 @@ class TargetState:
     """
 
     def __init__(self, clock):
-        self._latest_pose: PoseStamped | None = None
-        self._latest_vicon_reference: PoseStamped | None = None  # ground-truth for CV validation
+        self._latest_pose: PoseStamped = None
+        self._latest_vicon_reference: PoseStamped = None  # ground-truth for CV validation
         self.clock = clock
 
     # ------------------------------------------------------------------
@@ -81,11 +81,11 @@ class TargetState:
 
         return True
 
-    def get_pose(self) -> PoseStamped | None:
+    def get_pose(self) -> PoseStamped:
         """Return the latest raw pose (may be None or invalid — check has_valid_target first)."""
         return self._latest_pose
 
-    def get_latest_vicon_target(self) -> PoseStamped | None:
+    def get_latest_vicon_target(self) -> PoseStamped:
         """
         Return the most recent Vicon ground-truth reading for the RC car.
         May be None if no reading has been received yet.

@@ -36,14 +36,14 @@ class VisionState:
 
         # Averaged pose computed at startup
         self.init_vision_pose_list = []
-        self.init_vision_pose: PoseStamped | None = None
+        self.init_vision_pose: PoseStamped  = None
 
         # Latest fused pose (whichever source is currently trusted)
         self.current_vision_pose = PoseStamped()
 
         # Raw latest readings from each sensor (Vicon frame)
-        self._latest_vicon_pose: PoseStamped | None = None
-        self._latest_realsense_pose: PoseStamped | None = None  # already transformed
+        self._latest_vicon_pose: PoseStamped  = None
+        self._latest_realsense_pose: PoseStamped  = None  # already transformed
 
         # Fallback state: once True the node has faulted from Realsense -> Vicon
         self.realsense_faulted = False

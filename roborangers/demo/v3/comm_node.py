@@ -93,7 +93,7 @@ class CommNode(HandlersMixin, Node):
         self.current_mavros_state   = State()
         self.has_got_to_offboard    = False
         self.last_tracking_pose     = None
-        self._geo_fence_hold_pose: PoseStamped | None = None
+        self._geo_fence_hold_pose: PoseStamped = None
 
         ### OVERHEAD state: capture the drone's yaw when entering so it stays level
         self._overhead_entry_yaw: float | None = None

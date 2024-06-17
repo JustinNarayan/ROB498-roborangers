@@ -25,7 +25,7 @@ class SurveyState:
     """
 
     def __init__(self):
-        self._hover_pose: PoseStamped | None = None   # Position anchor (x, y, z fixed)
+        self._hover_pose: PoseStamped = None   # Position anchor (x, y, z fixed)
         self._current_yaw: float = 0.0                # Current target yaw (radians)
         self._step_start_time_ns: int | None = None   # When the current step began
 
