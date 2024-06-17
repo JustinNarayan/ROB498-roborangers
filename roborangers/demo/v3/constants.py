@@ -73,8 +73,8 @@ TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
 TARGET_HOVER_ABOVE = 0.5 # m
 
 # Desired standoff radius in the x/y plane from the target object centre (m)
-TARGET_STANDOFF_RADIUS = 0.5 # m
-TARGET_CLOSE_ENOUGH_RADIUS = 1.0 # m
+TARGET_STANDOFF_RADIUS = 0.8 # m
+TARGET_CLOSE_ENOUGH_RADIUS = 1.2 # m
 
 # Maximum allowed x/y distance (m) from the drone to the target before tracking is refused.
 # Prevents erroneous CV detections from sending the drone far away.
