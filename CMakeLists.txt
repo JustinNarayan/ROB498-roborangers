@@ -35,7 +35,6 @@ install(PROGRAMS
   roborangers/cv/yolo/imx219_yolov8n_trt.py
   roborangers/cv/yolo/centroid_detector_node_trt.py
   roborangers/cv/calibration/imx219_calibration_publisher.py
-  roborangers/cv/calibration/t265_fisheye_publisher.py
   roborangers/cv/calibration/export_t265_intrinsics.py
   roborangers/cv/calibration/generate_kalibr_files.py
   DESTINATION lib/${PROJECT_NAME}

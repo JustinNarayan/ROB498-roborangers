@@ -61,8 +61,8 @@ ros2 run roborangers export_t265_intrinsics.py -- \
 
 ```bash
 ros2 run roborangers generate_kalibr_files.py -- \
-  --imx-yaml /tmp/imx219_ost.yaml \
-  --fisheye-yaml /tmp/t265_calibration/t265_fisheye1.yaml \
+  --imx-yaml /home/jetson/imx219_calibration/ost.yaml \
+  --fisheye-yaml /home/jetson/t265_calibration/t265_fisheye1.yaml \
   --output-dir /tmp/kalibr_inputs
 ```
 
@@ -77,25 +77,32 @@ ros2 bag record \
     -o multicam_calib_bag
 ```
 
-## Kalibir installation
+## Kalibr installation
 
 ```bash
 docker pull stereolabs/kalibr
 # or build from source:
+cd /home/jetson
 git clone https://github.com/ethz-asl/kalibr.git
 cd kalibr
 docker build -t kalibr .
 ```
-## Run Kalibir
+
+`docker build -t kalibr .` must be run inside the cloned ETH Kalibr repository, not inside your local calibration output folder.
+
+## Run Kalibr
 
 ```bash
+cd /tmp/kalibr_inputs
 docker run -it \
     -v $(pwd):/data \
     kalibr \
     kalibr_calibrate_cameras \
-    --bag /data/multicam_calib_bag.bag \
+  --bag /data/multicam_calib_bag/multicam_calib_bag_0.db3 \
     --target /data/aprilgrid.yaml \
     --models pinhole-radtan omni-equidist \
     --topics /imx219/image_raw /camera/fisheye1/image_raw \
     --dont-show-report
 ```
+
+If you recorded with `ros2 bag record`, the bag will usually be a directory containing `.db3` data rather than a ROS 1 `.bag` file. Put a copy of that bag directory alongside `aprilgrid.yaml` and `cameras.yaml`, or mount both paths into the container explicitly.
