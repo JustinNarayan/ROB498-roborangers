@@ -110,9 +110,9 @@ def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped, static_
     # Apply positional offset from drone -> vicon
     vicon_to_rs = [0.23, 0, -0.12] # x,y,z
     if static_pos_transform is not None:
-        vicon_to_rs[0] = static_pos_transform.position.x
-        vicon_to_rs[1] = static_pos_transform.position.y
-        vicon_to_rs[2] = static_pos_transform.position.z
+        vicon_to_rs[0] -= static_pos_transform.position.x
+        vicon_to_rs[1] -= static_pos_transform.position.y
+        vicon_to_rs[2] -= static_pos_transform.position.z
 
     result = PoseStamped()
     result.pose.position.x = pose_realsense.pose.position.x - vicon_to_rs[0]
@@ -258,6 +258,7 @@ def is_valid_target_pose(pose: PoseStamped) -> bool:
 def compute_tracking_pose(
     drone_pose: PoseStamped,
     target_pose: PoseStamped,
+    last_target_pose: PoseStamped,
     standoff_radius: float,
     hover_above: float,
 ) -> PoseStamped:
@@ -288,6 +289,12 @@ def compute_tracking_pose(
     else:
         angle_to_drone = np.arctan2(dy, dx)
 
+    # if (dist_xy < standoff_radius) and (last_target_pose is not None):
+    #     # Already around drone, remain in position   
+    #     setpoint_x = last_target_pose.pose.position.x 
+    #     setpoint_y = last_target_pose.pose.position.y
+    #     setpoint_z = last_target_pose.pose.position.z 
+    # else:
     # Closest point on the standoff circle
     setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
     setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)

@@ -120,7 +120,11 @@ class VisionState:
         if len(self.init_vision_pose_list) >= INIT_VISION_POSE_COUNT_MAX:
             self.init_vision_pose = compute_average_pose(self.init_vision_pose_list)
             # Look for static offset from Vicon
-            if self.is_using_realsense() and CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK:
+            if (
+                self.is_using_realsense() and CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK
+                ) and (
+                    self._latest_vicon_pose is not None
+                ):
                 self.static_pos_transform = Pose()
                 self.static_pos_transform.position.x = self._latest_vicon_pose.pose.position.x - self.init_vision_pose.pose.position.x
                 self.static_pos_transform.position.y = self._latest_vicon_pose.pose.position.y - self.init_vision_pose.pose.position.y

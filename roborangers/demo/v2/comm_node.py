@@ -78,6 +78,9 @@ class CommNode(HandlersMixin, Node):
         self.abort_requested        = False   # immediate: land in place
         self.manual_override_requested  = False
         self.emergency_stop_requested   = False
+        
+        ## Vision Tracking
+        self.last_tracking_pose = None
 
         ### MAVROS tracking
         self.current_mavros_state   = State()
@@ -202,12 +205,17 @@ class CommNode(HandlersMixin, Node):
         elif state == MissionState.TRACKING_TARGET:
             target = self.target_state.get_pose()
             if target is not None:
-                return compute_tracking_pose(
+                tracking_pose = compute_tracking_pose(
                     self.vision_state.current_vision_pose,
                     target,
+                    self.last_tracking_pose,
                     TARGET_STANDOFF_RADIUS,
                     TARGET_HOVER_ABOVE,
                 )
+                self.last_tracking_pose = tracking_pose
+                return tracking_pose
+            else:
+                self.last_tracking_pose = None
 
         elif state == MissionState.GOING_HOME:
             return self.vision_state.get_init_hover_pose()
