@@ -15,7 +15,7 @@ from mavros_msgs.msg import State
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 # Math utilities
-from roborangers.utils.pose_utils import compute_average_pose
+from roborangers.utils.pose_utils import compute_average_pose, subtract_poses
 
 ###############################################
 #               C O M M A N D S               #
@@ -31,14 +31,19 @@ from roborangers.utils.pose_utils import compute_average_pose
 ###############################################
 
 USING_REALSENSE = False
-LAUNCH_IMMEDIATELY = False
+LAUNCH_IMMEDIATELY = True
+APPLY_VICON_TRANSFORMATION = False
+
 DRONE_ID = 'rob498_drone_06'
 VICON_TOPIC_NAME = '/vicon/ROB498_Drone/ROB498_Drone' # check via `ros2 topic list`
 REALSENSE_TOPIC_NAME = '/camera/pose/sample'
 INIT_VISION_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose
-TARGET_HEIGHT = 0.5 # meters
+
+TARGET_HEIGHT = 0.5 # meters, the vicon marker must be at 50
+# TARGET_HEIGHT = 0.32 # meters, for realsense, the z=0 is already about 18cm off the ground
+
 QOS_DEPTH = 10 # number of messages to store
-COMMAND_RATE = 20 # Hz, recommended in procedure.md
+COMMAND_RATE = 50 # Hz, recommended in procedure.md
 OFFBOARD_MODE = 'OFFBOARD'
 ALTITUDE_MODE = 'ALTCTL'
 DEBUGGING_LOOP_LOGS = False
@@ -235,6 +240,20 @@ class CommNode(Node):
         # Redirect received vision data to mavros
         redirected_pose = self.vision_state.current_vision_pose
         redirected_pose.header.frame_id = 'map'
+        redirected_pose.header.stamp = \
+            self.get_clock().now().to_msg()
+        
+        if APPLY_VICON_TRANSFORMATION:
+            transform_pose = PoseStamped()
+            transform_pose.header.frame_id = 'map'
+            transform_pose.pose.position.x = 0.0
+            transform_pose.pose.position.y = 0.0
+            transform_pose.pose.position.z = 0.0
+            transform_pose.pose.orientation.x = 1.0
+            transform_pose.pose.orientation.y = 0.0
+            transform_pose.pose.orientation.z = 0.0
+            transform_pose.pose.orientation.w = 0.0
+            
         self.pub_mavros_vision_pose.publish(redirected_pose)
         
         # Ensure initial pose has been calibrated
@@ -255,6 +274,7 @@ class CommNode(Node):
             # Construct target hover
             target_hover_pose = PoseStamped()
             target_hover_pose.header.frame_id = 'map'
+            
             target_hover_pose.pose.position.x = self.vision_state.init_vision_pose.pose.position.x
             target_hover_pose.pose.position.y = self.vision_state.init_vision_pose.pose.position.y
             target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z
@@ -265,7 +285,7 @@ class CommNode(Node):
             if self.drone_flight_test_commanded or LAUNCH_IMMEDIATELY:
                 target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z + TARGET_HEIGHT
             
-            # Publish hover setpoint
+            # Publish hover setpoints
             # This must be published BEFORE offboard mode is enabled (dummy setpoints would suffice)
             target_hover_pose.header.stamp = \
                 self.get_clock().now().to_msg()
