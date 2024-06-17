@@ -1,5 +1,6 @@
 from geometry_msgs.msg import PoseStamped, PoseArray
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
+from tf.transformations import tft
 import numpy as np
 
 ###############################################
@@ -80,31 +81,81 @@ def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
     distance = (delta_x**2 + delta_y**2 + delta_z**2)**(1/2)
     return distance
 
+###############################################
+#   T R A N S F O R M A T I O N   U T I L S   #
+###############################################
+
+def make_transform_matrix(x, y, z, roll, pitch, yaw):
+    """
+    Create a 4x4 homogeneous transform matrix from translation and RPY.
+    """
+    T = tft.euler_matrix(roll, pitch, yaw)  # rotation
+    T[0:3, 3] = [x, y, z]                   # translation
+    return T
+
+def pose_to_matrix(pose: PoseStamped):
+    """
+    Convert PoseStamped to 4x4 transform matrix.
+    """
+    pos = pose.pose.position
+    ori = pose.pose.orientation
+
+    T = tft.quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
+    T[0:3, 3] = [pos.x, pos.y, pos.z]
+    return T
+
+def matrix_to_pose(T, frame_id="map"):
+    """
+    Convert 4x4 transform matrix back to PoseStamped.
+    """
+    pose = PoseStamped()
+    pose.header.frame_id = frame_id
+
+    trans = T[0:3, 3]
+    quat = tft.quaternion_from_matrix(T)
+
+    pose.pose.position.x = trans[0]
+    pose.pose.position.y = trans[1]
+    pose.pose.position.z = trans[2]
+
+    pose.pose.orientation.x = quat[0]
+    pose.pose.orientation.y = quat[1]
+    pose.pose.orientation.z = quat[2]
+    pose.pose.orientation.w = quat[3]
+
+    return pose
+
 def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
     """
     Shift Realsense pose into the Vicon/world frame by subtracting the
     known rigid-body offset between the two sensors.
     """
-    # Define transform from vicon to realsense in the map frame
-    vicon_to_realsense = PoseStamped()
-    vicon_to_realsense.header.frame_id = 'map'
-    
-    # Position
-    vicon_to_realsense.pose.position.x = 0.23  # 0.23 "forward" from vicon to realsense
-    vicon_to_realsense.pose.position.y = 0.0
-    vicon_to_realsense.pose.position.z = -0.12  # 0.12 "down" from vicon to realsense
-    
-    # Default Quaternion
-    vicon_to_realsense.pose.orientation.x = 0.0
-    vicon_to_realsense.pose.orientation.y = 0.0
-    vicon_to_realsense.pose.orientation.z = 0.0
-    vicon_to_realsense.pose.orientation.w = 1.0
-    
-    # Subtract this transform
-    shifted_realsense = subtract_poses(pose_realsense, vicon_to_realsense)
-    shifted_realsense.header.frame_id = 'map'
-    
-    return shifted_realsense
+    # ===================== ADJUST HERE =====================
+    tx = 0.23     # +X
+    ty = 0.0     # Y
+    tz = -0.12   # -Z
+
+    roll  = 0.0
+    pitch = np.deg2rad(45.0)   # +45 deg about Y
+    yaw   = 0.0
+    # ======================================================
+
+    # Transform from VICON → REALSENSE
+    T_vicon_to_rs = make_transform_matrix(tx, ty, tz, roll, pitch, yaw)
+
+    # We want REALSENSE → VICON, so invert it
+    T_rs_to_vicon = np.linalg.inv(T_vicon_to_rs)
+
+    # Convert input pose to matrix
+    T_pose_rs = pose_to_matrix(pose_realsense)
+
+    # Apply transform
+    T_pose_vicon = T_rs_to_vicon @ T_pose_rs
+
+    # Convert back
+    pose_vicon = matrix_to_pose(T_pose_vicon, frame_id="map")
+
+    return pose_vicon
 
 ###############################################
 #     O R I E N T A T I O N   U T I L S       #
