@@ -16,7 +16,7 @@ def generate_launch_description():
         #
         DeclareLaunchArgument(
             name="gcs_url",
-            default_value="udp://@10.42.0.122:14550"
+            default_value="udp://@10.42.0.124:14550"
         ),
         #
         DeclareLaunchArgument(

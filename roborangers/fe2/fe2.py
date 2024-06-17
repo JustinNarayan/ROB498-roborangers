@@ -22,10 +22,10 @@ from roborangers.utils.pose_utils import compute_average_pose, subtract_poses, d
 #               C O M M A N D S               #
 ###############################################
 
-# ros2 service call /rob498_drone_06/comm/land std_srvs/srv/Trigger {}
-# ros2 service call /rob498_drone_06/comm/launch std_srvs/srv/Trigger {}
-# ros2 service call /rob498_drone_06/comm/abort std_srvs/srv/Trigger {}
-# ros2 service call /rob498_drone_06/comm/test std_srvs/srv/Trigger {}
+# ros2 service call /rob498_drone_6/comm/land std_srvs/srv/Trigger {}
+# ros2 service call /rob498_drone_6/comm/launch std_srvs/srv/Trigger {}
+# ros2 service call /rob498_drone_6/comm/abort std_srvs/srv/Trigger {}
+# ros2 service call /rob498_drone_6/comm/test std_srvs/srv/Trigger {}
 
 ###############################################
 #              C O N S T A N T S              #
@@ -276,13 +276,13 @@ class CommNode(Node):
             
         # Redirect received vision data to mavros
         redirected_pose = self.vision_state.current_vision_pose
-        redirected_pose.header.frame_id = 'map'
+        redirected_pose.header.frame_id = 'map' # 'odom' if USING_REALSENSE else
         redirected_pose.header.stamp = \
             self.get_clock().now().to_msg()
         
         if APPLY_VICON_TRANSFORMATION:
             transform_pose = PoseStamped()
-            transform_pose.header.frame_id = 'map'
+            transform_pose.header.frame_id = 'map' # 'odom' if USING_REALSENSE else
             transform_pose.pose.position.x = -0.11
             transform_pose.pose.position.y = 0.0
             transform_pose.pose.position.z = 0.0
@@ -291,7 +291,7 @@ class CommNode(Node):
             transform_pose.pose.orientation.z = 0.0
             transform_pose.pose.orientation.w = 0.0
             redirected_pose = subtract_poses(redirected_pose, transform_pose)
-            redirected_pose.header.frame_id = 'map'
+            redirected_pose.header.frame_id = 'map' #  'odom' if USING_REALSENSE else
             redirected_pose.header.stamp = \
                 self.get_clock().now().to_msg()
             

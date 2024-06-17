@@ -245,13 +245,13 @@ class CommNode(Node):
             
         # Redirect received vision data to mavros
         redirected_pose = self.vicon_state.current_vision_pose
-        redirected_pose.header.frame_id = 'map'
+        redirected_pose.header.frame_id = 'odom' if USE_REALSENSE else 'map'
         redirected_pose.header.stamp = \
             self.get_clock().now().to_msg()
         
         if APPLY_VICON_TRANSFORMATION:
             transform_pose = PoseStamped()
-            transform_pose.header.frame_id = 'map'
+            transform_pose.header.frame_id = 'map' # investigate if APPLY_VICON_TRANSFORMATION
             transform_pose.pose.position.x = 0.0
             transform_pose.pose.position.y = 0.0
             transform_pose.pose.position.z = 0.0
