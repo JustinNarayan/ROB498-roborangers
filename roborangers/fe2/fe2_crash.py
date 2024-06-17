@@ -36,9 +36,6 @@ LAUNCH_IMMEDIATELY = True
 APPLY_VICON_TRANSFORMATION = False
 APPLY_CAMERA_TRANSFORMATION = True
 
-# Emergency Land
-MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 1.5 # m
-
 DRONE_ID = 'rob498_drone_6'
 VICON_TOPIC_NAME = '/vicon/ROB498_Drone/ROB498_Drone' # check via `ros2 topic list`
 REALSENSE_TOPIC_NAME = '/camera/pose/sample'
@@ -283,6 +280,36 @@ class CommNode(Node):
         redirected_pose.header.stamp = \
             self.get_clock().now().to_msg()
         
+        if APPLY_VICON_TRANSFORMATION:
+            transform_pose = PoseStamped()
+            transform_pose.header.frame_id = 'map' # 'odom' if USING_REALSENSE else
+            transform_pose.pose.position.x = -0.11
+            transform_pose.pose.position.y = 0.0
+            transform_pose.pose.position.z = 0.0
+            transform_pose.pose.orientation.x = 0.0
+            transform_pose.pose.orientation.y = 0.0
+            transform_pose.pose.orientation.z = 0.0
+            transform_pose.pose.orientation.w = 0.0
+            redirected_pose = subtract_poses(redirected_pose, transform_pose)
+            redirected_pose.header.frame_id = 'map' #  'odom' if USING_REALSENSE else
+            redirected_pose.header.stamp = \
+                self.get_clock().now().to_msg()
+            
+        # if APPLY_CAMERA_TRANSFORMATION:
+        #     transform_pose = PoseStamped()
+        #     transform_pose.header.frame_id = 'map'
+        #     transform_pose.pose.position.x = 0.12
+        #     transform_pose.pose.position.y = 0.0
+        #     transform_pose.pose.position.z = -0.12
+        #     transform_pose.pose.orientation.x = 0.0
+        #     transform_pose.pose.orientation.y = 0.0
+        #     transform_pose.pose.orientation.z = 0.0
+        #     transform_pose.pose.orientation.w = 0.0
+        #     redirected_pose = subtract_poses(redirected_pose, transform_pose)
+        #     redirected_pose.header.frame_id = 'map'
+        #     redirected_pose.header.stamp = \
+        #         self.get_clock().now().to_msg()
+            
         self.pub_mavros_vision_pose.publish(redirected_pose)
         
         # Ensure initial pose has been calibrated
@@ -300,18 +327,10 @@ class CommNode(Node):
 
         # Check if drone should fly
         if self.drone_flight_commanded:
-            # Check for emergency land
-            distance_from_start = distance_poses(
-                self.vision_state.current_vision_pose, self.vision_state.init_vision_pose
-            )
-            if distance_from_start >= MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT:
-                self.drone_flight_commanded = False
-                self.drone_flight_test_commanded = False
-                return
-            
             # Construct target hover
             target_hover_pose = PoseStamped()
             target_hover_pose.header.frame_id = 'map'
+            
             target_hover_pose.pose.position.x = self.vision_state.init_vision_pose.pose.position.x
             target_hover_pose.pose.position.y = self.vision_state.init_vision_pose.pose.position.y
             target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z
@@ -320,6 +339,7 @@ class CommNode(Node):
             target_hover_pose.pose.orientation.z = self.vision_state.init_vision_pose.pose.orientation.z
             target_hover_pose.pose.orientation.w = self.vision_state.init_vision_pose.pose.orientation.w
             if self.drone_flight_test_commanded or LAUNCH_IMMEDIATELY:
+                # target_hover_pose.pose.position.z = self.vision_state.init_vision_pose.pose.position.z + self.TARGET_HEIGHT
                 target_hover_pose.pose.position.z = self.TARGET_HEIGHT
             
             # Publish hover setpoints
@@ -411,17 +431,15 @@ class CommNode(Node):
     ) -> None:
         if DEBUGGING_LOOP_LOGS:
             self.get_logger().info('Camera received!')
-        
-        # Extract callback pose
+            
         new_message = PoseStamped()
         new_message.header.stamp = msg.header.stamp
         new_message.header.frame_id = msg.header.frame_id
         new_message.pose = msg.pose.pose
         
-        # Apply transformation
         if APPLY_CAMERA_TRANSFORMATION:
             transform_pose = PoseStamped()
-            transform_pose.header.frame_id = 'map' # odom?
+            transform_pose.header.frame_id = 'map'
             transform_pose.pose.position.x = 0.12
             transform_pose.pose.position.y = 0.0
             transform_pose.pose.position.z = -0.12
@@ -430,7 +448,7 @@ class CommNode(Node):
             transform_pose.pose.orientation.z = 0.0
             transform_pose.pose.orientation.w = 0.0
             new_message = subtract_poses(new_message, transform_pose)
-            new_message.header.frame_id = 'map' # odom?
+            new_message.header.frame_id = 'map'
             new_message.header.stamp = \
                 self.get_clock().now().to_msg()
             
@@ -463,28 +481,6 @@ class CommNode(Node):
     ) -> None:
         if DEBUGGING_LOOP_LOGS:
             self.get_logger().info('Vicon received!')
-            
-        # Extract callback pose
-        new_message = PoseStamped()
-        new_message.header.stamp = msg.header.stamp
-        new_message.header.frame_id = msg.header.frame_id
-        new_message.pose = msg.pose
-        
-        # Apply transformation
-        if APPLY_VICON_TRANSFORMATION:
-            transform_pose = PoseStamped()
-            transform_pose.header.frame_id = 'map'
-            transform_pose.pose.position.x = -0.11
-            transform_pose.pose.position.y = 0.0
-            transform_pose.pose.position.z = 0.0
-            transform_pose.pose.orientation.x = 0.0
-            transform_pose.pose.orientation.y = 0.0
-            transform_pose.pose.orientation.z = 0.0
-            transform_pose.pose.orientation.w = 0.0
-            new_message = subtract_poses(new_message, transform_pose)
-            new_message.header.frame_id = 'map'
-            new_message.header.stamp = \
-                self.get_clock().now().to_msg()
             
         # Store initial poses to compute neutral init_vicon_pose
         if len(self.vision_state.init_vision_pose_list) < INIT_VISION_POSE_COUNT_MAX:
