@@ -1,5 +1,5 @@
 import numpy as np
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Position
 from std_msgs.msg import Float32MultiArray
 
 from pose_utils import (
@@ -45,6 +45,9 @@ class VisionState:
 
         # Fallback state: once True the node has faulted from Realsense -> Vicon
         self.realsense_faulted = False
+
+        # Static position transform from Vicon to Realsense
+        self.static_pos_transform = None
 
     # ------------------------------------------------------------------
     # Public query helpers
@@ -111,6 +114,12 @@ class VisionState:
         self.init_vision_pose_list.append(pose)
         if len(self.init_vision_pose_list) >= INIT_VISION_POSE_COUNT_MAX:
             self.init_vision_pose = compute_average_pose(self.init_vision_pose_list)
+            # Look for static offset from Vicon
+            if self.is_using_realsense() and CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK:
+                self.static_pos_transform = Position()
+                self.static_pos_transform.x = self._latest_vicon_pose.pose.position.x - self.init_vision_pose.pose.position.x
+                self.static_pos_transform.y = self._latest_vicon_pose.pose.position.y - self.init_vision_pose.pose.position.y
+                self.static_pos_transform.z = self._latest_vicon_pose.pose.position.z - self.init_vision_pose.pose.position.z
 
     def _check_divergence(self):
         """

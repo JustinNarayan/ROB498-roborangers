@@ -1,4 +1,4 @@
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Position
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from std_srvs.srv import Trigger
@@ -71,7 +71,7 @@ class HandlersMixin:
     # Vision pose handlers
     # ------------------------------------------------------------------
 
-    def handle_camera_pose(self, msg: Odometry) -> None:
+    def handle_camera_pose(self, msg: Odometry, static_pos_transform: Position) -> None:
         # Extract message data for pose
         camera_pose = PoseStamped()
         camera_pose.header.stamp    = msg.header.stamp
@@ -79,7 +79,7 @@ class HandlersMixin:
         camera_pose.pose            = msg.pose.pose
 
         # Convert to Vicon frame
-        transformed_camera_pose = transform_realsense_pose_to_vicon_frame(camera_pose)
+        transformed_camera_pose = transform_realsense_pose_to_vicon_frame(camera_pose, self.vision_state.get_static_pos_transform())
 
         # Feed into vision state (handles fallback logic internally)
         self.vision_state.update_realsense_pose(transformed_camera_pose)

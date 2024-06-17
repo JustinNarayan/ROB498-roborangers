@@ -1,4 +1,4 @@
-from geometry_msgs.msg import PoseStamped, PoseArray
+from geometry_msgs.msg import PoseStamped, Position
 from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_multiply, quaternion_conjugate
 import numpy as np
 
@@ -84,7 +84,7 @@ def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
 #   T R A N S F O R M A T I O N   U T I L S   #
 ###############################################
 
-def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
+def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped, static_pos_transform: Position):
     """
     Shift Realsense pose into the Vicon/world frame by subtracting the
     known rigid-body offset between the two sensors.
@@ -109,6 +109,10 @@ def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
 
     # Apply positional offset from drone -> vicon
     vicon_to_rs = [0.23, 0, -0.12] # x,y,z
+    if static_pos_transform is not None:
+        vicon_to_rs[0] += static_pos_transform.x
+        vicon_to_rs[1] += static_pos_transform.y
+        vicon_to_rs[2] += static_pos_transform.z
 
     result = PoseStamped()
     result.pose.position.x = pose_realsense.pose.position.x - vicon_to_rs[0]
