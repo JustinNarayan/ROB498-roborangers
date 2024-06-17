@@ -14,7 +14,7 @@ PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
 COMMAND_RATE = 50 # Hz
-SUCCESS_RADIUS = 0.20 # m
+SUCCESS_RADIUS = 0.4 # m
 
 HOVER_ALTITUDE = 0.5 # m
 
@@ -22,8 +22,11 @@ HOVER_ALTITUDE = 0.5 # m
 #    V I S I O N   F A L L B A C K            #
 ###############################################
 
+# Number of subsequent divergent frames to consider diverged
+REALSENSE_DIVERGENCE_COUNT = 2
+
 # Max allowed positional distance (m) between Realsense and Vicon before faulting to Vicon
-REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.4   # m
+REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.3   # m
 
 # Max allowed angular distance (rad) between Realsense and Vicon before faulting to Vicon
 # Computed as: 2 * arccos(|q_a · q_b|), giving the geodesic angle between two orientations
@@ -55,7 +58,7 @@ TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
 TARGET_HOVER_ABOVE = 0.5 # m
 
 # Desired standoff radius in the x/y plane from the target object centre (m)
-TARGET_STANDOFF_RADIUS = 0.5 # m
+TARGET_STANDOFF_RADIUS = 0.25 # m
 
 # Rate at which the target pose simulator publishes (Hz)
 TARGET_SIM_PUBLISH_RATE = 2  # Hz

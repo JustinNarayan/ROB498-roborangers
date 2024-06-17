@@ -1,5 +1,5 @@
 import numpy as np
-from geometry_msgs.msg import PoseStamped, Position
+from geometry_msgs.msg import PoseStamped, Pose
 from std_msgs.msg import Float32MultiArray
 
 from pose_utils import (
@@ -17,6 +17,7 @@ from constants import (
     REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD,
     REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD,
     DEBUG_VISION_DIVERGENCE,
+    REALSENSE_DIVERGENCE_COUNT
 )
 
 ###############################################
@@ -45,6 +46,7 @@ class VisionState:
 
         # Fallback state: once True the node has faulted from Realsense -> Vicon
         self.realsense_faulted = False
+        self.fault_count = 0
 
         # Static position transform from Vicon to Realsense
         self.static_pos_transform = None
@@ -63,6 +65,9 @@ class VisionState:
         if CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK:
             return not self.realsense_faulted
         return False
+    
+    def get_static_pos_transform(self) -> Pose:
+        return self.static_pos_transform
 
     # ------------------------------------------------------------------
     # Pose update entry-points (called by handlers)
@@ -116,10 +121,10 @@ class VisionState:
             self.init_vision_pose = compute_average_pose(self.init_vision_pose_list)
             # Look for static offset from Vicon
             if self.is_using_realsense() and CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK:
-                self.static_pos_transform = Position()
-                self.static_pos_transform.x = self._latest_vicon_pose.pose.position.x - self.init_vision_pose.pose.position.x
-                self.static_pos_transform.y = self._latest_vicon_pose.pose.position.y - self.init_vision_pose.pose.position.y
-                self.static_pos_transform.z = self._latest_vicon_pose.pose.position.z - self.init_vision_pose.pose.position.z
+                self.static_pos_transform = Pose()
+                self.static_pos_transform.position.x = self._latest_vicon_pose.pose.position.x - self.init_vision_pose.pose.position.x
+                self.static_pos_transform.position.y = self._latest_vicon_pose.pose.position.y - self.init_vision_pose.pose.position.y
+                self.static_pos_transform.position.z = self._latest_vicon_pose.pose.position.z - self.init_vision_pose.pose.position.z
 
     def _check_divergence(self):
         """
@@ -154,16 +159,21 @@ class VisionState:
         pos_fault = pos_divergence >= REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD
         ori_fault = ori_divergence >= REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD
 
-        if pos_fault or ori_fault:
-            self.realsense_faulted = True
-            if self._logger:
-                self._logger.error(
-                    f'[VISION FAULT] Realsense/Vicon divergence exceeded threshold — '
-                    f'position: {pos_divergence:.3f} m (limit {REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD} m), '
-                    f'orientation: {np.degrees(ori_divergence):.2f} deg '
-                    f'(limit {np.degrees(REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD):.2f} deg). '
-                    f'Permanently switching to Vicon.'
-                )
+        if (pos_fault or ori_fault) and self.is_init_pose_computed():
+            self.fault_count += 1
+            
+            if self.fault_count >= REALSENSE_DIVERGENCE_COUNT:
+                self.realsense_faulted = True
+                if self._logger:
+                    self._logger.error(
+                        f'[VISION FAULT] Realsense/Vicon divergence exceeded threshold — '
+                        f'position: {pos_divergence:.3f} m (limit {REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD} m), '
+                        f'orientation: {np.degrees(ori_divergence):.2f} deg '
+                        f'(limit {np.degrees(REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD):.2f} deg). '
+                        f'Permanently switching to Vicon.'
+                    )
+        else:
+            self.fault_count = 0
 
     def _publish_debug_divergence(self, rs_pose, vc_pose):
         """
