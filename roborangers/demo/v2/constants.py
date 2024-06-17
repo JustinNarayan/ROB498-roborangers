@@ -25,6 +25,9 @@ HOVER_ALTITUDE = 0.5 # m
 # Number of subsequent divergent frames to consider diverged
 REALSENSE_DIVERGENCE_COUNT = 2
 
+# Whether to attempt adding a learned static pos transform
+ATTEMPT_LEARNED_VICON_ALIGN = False
+
 # Max allowed positional distance (m) between Realsense and Vicon before faulting to Vicon
 REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.3   # m
 

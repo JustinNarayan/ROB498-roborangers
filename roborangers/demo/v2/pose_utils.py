@@ -289,16 +289,16 @@ def compute_tracking_pose(
     else:
         angle_to_drone = np.arctan2(dy, dx)
 
-    # if (dist_xy < standoff_radius) and (last_target_pose is not None):
-    #     # Already around drone, remain in position   
-    #     setpoint_x = last_target_pose.pose.position.x 
-    #     setpoint_y = last_target_pose.pose.position.y
-    #     setpoint_z = last_target_pose.pose.position.z 
-    # else:
-    # Closest point on the standoff circle
-    setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
-    setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)
-    setpoint_z = tz + hover_above
+    if (dist_xy < standoff_radius) and (last_target_pose is not None):
+        # Already around drone, remain in position   
+        setpoint_x = last_target_pose.pose.position.x 
+        setpoint_y = last_target_pose.pose.position.y
+        setpoint_z = last_target_pose.pose.position.z 
+    else:
+        # Closest point on the standoff circle
+        setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
+        setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)
+        setpoint_z = tz + hover_above
 
     # Yaw so the drone faces the target (i.e. points from setpoint toward target)
     yaw_to_target = np.arctan2(ty - setpoint_y, tx - setpoint_x)

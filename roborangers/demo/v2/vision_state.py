@@ -17,7 +17,8 @@ from constants import (
     REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD,
     REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD,
     DEBUG_VISION_DIVERGENCE,
-    REALSENSE_DIVERGENCE_COUNT
+    REALSENSE_DIVERGENCE_COUNT,
+    ATTEMPT_LEARNED_VICON_ALIGN
 )
 
 ###############################################
@@ -120,10 +121,12 @@ class VisionState:
         if len(self.init_vision_pose_list) >= INIT_VISION_POSE_COUNT_MAX:
             self.init_vision_pose = compute_average_pose(self.init_vision_pose_list)
             # Look for static offset from Vicon
-            if (
+            if  (
                 self.is_using_realsense() and CURRENT_MISSION is MissionType.REALSENSE_WITH_FALLBACK
                 ) and (
                     self._latest_vicon_pose is not None
+                ) and (
+                    ATTEMPT_LEARNED_VICON_ALIGN
                 ):
                 self.static_pos_transform = Pose()
                 self.static_pos_transform.position.x = self._latest_vicon_pose.pose.position.x - self.init_vision_pose.pose.position.x
