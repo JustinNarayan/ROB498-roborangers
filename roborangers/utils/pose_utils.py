@@ -65,3 +65,17 @@ def subtract_poses(pose_a: PoseStamped, pose_b: PoseStamped):
     result.pose.orientation.w = quat_rel[3]
 
     return result
+
+def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
+    """
+    Compute pose distance (a - b).
+    """
+    
+
+    # Positions
+    delta_x = pose_a.pose.position.x - pose_b.pose.position.x
+    delta_y = pose_a.pose.position.y - pose_b.pose.position.y
+    delta_z = pose_a.pose.position.z - pose_b.pose.position.z
+    distance = (delta_x**2 + delta_y**2 + delta_z**2)**(1/2)
+
+    return distance
