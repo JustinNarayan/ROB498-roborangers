@@ -9,12 +9,12 @@ class MissionType(Enum):
     REALSENSE               = auto()  # Full reliance on Realsense
     REALSENSE_WITH_FALLBACK = auto()  # Realsense primary, fault to Vicon on divergence
 
-CURRENT_MISSION = MissionType.REALSENSE_WITH_FALLBACK
+CURRENT_MISSION = MissionType.VICON
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
 COMMAND_RATE = 50 # Hz
-SUCCESS_RADIUS = 0.4 # m
+SUCCESS_RADIUS = 0.25 # m
 
 HOVER_ALTITUDE = 0.5 # m
 
@@ -45,10 +45,10 @@ DEBUG_VISION_DIVERGENCE = True
 ###############################################
 
 # How many radians the drone yaws per step while surveying
-SURVEY_ANGULAR_STEP_RADIANS = 0.785  # ~45 degrees per step
+SURVEY_ANGULAR_STEP_RADIANS = 0.393  # ~22.5 degrees per step
 
 # How long the drone holds each angular step before advancing (nanoseconds)
-SURVEY_STEP_HOLD_TIME_NANOSECONDS = 5e9  # 5 second per step
+SURVEY_STEP_HOLD_TIME_NANOSECONDS = 2e9  # 5 second per step
 
 ###############################################
 #          T A R G E T   T R A C K I N G      #
@@ -61,7 +61,7 @@ TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
 TARGET_HOVER_ABOVE = 0.5 # m
 
 # Desired standoff radius in the x/y plane from the target object centre (m)
-TARGET_STANDOFF_RADIUS = 0.25 # m
+TARGET_STANDOFF_RADIUS = 0.4 # m
 
 # Rate at which the target pose simulator publishes (Hz)
 TARGET_SIM_PUBLISH_RATE = 2  # Hz
