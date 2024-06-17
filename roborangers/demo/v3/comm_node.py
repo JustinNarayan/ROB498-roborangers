@@ -26,7 +26,7 @@ from constants import (
     LAND_SERVICE_NAME, LAUNCH_SERVICE_NAME, ABORT_SERVICE_NAME, TEST_SERVICE_NAME,
     MAVROS_STATE_TOPIC_NAME, MAVROS_SETPOINT_TOPIC_NAME, MAVROS_VISION_POSE_TOPIC_NAME,
     QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE,
-    TARGET_STANDOFF_RADIUS, TARGET_HOVER_ABOVE, MAX_TRACKING_DISTANCE,
+    TARGET_STANDOFF_RADIUS, TARGET_CLOSE_ENOUGH_RADIUS, TARGET_HOVER_ABOVE, MAX_TRACKING_DISTANCE,
     DEBUG_VISION_DIVERGENCE,
     DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME,
     DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME,
@@ -82,6 +82,7 @@ class CommNode(HandlersMixin, Node):
         ### MAVROS tracking
         self.current_mavros_state   = State()
         self.has_got_to_offboard    = False
+        self.last_tracking_pose     = None
 
         ### Control loop
         self.control_timer = self.create_timer(1.0 / COMMAND_RATE, self.control_loop)
@@ -215,11 +216,15 @@ class CommNode(HandlersMixin, Node):
                 tracking_pose = compute_tracking_pose(
                     self.vision_state.current_vision_pose,
                     target,
+                    self.last_tracking_pose,
                     TARGET_STANDOFF_RADIUS,
+                    TARGET_CLOSE_ENOUGH_RADIUS,
                     TARGET_HOVER_ABOVE,
                 )
+                self.last_tracking_pose = tracking_pose
                 return tracking_pose
             else:
+                self.last_tracking_pose = None
                 pass  # fall through to default hover
 
         elif state == MissionState.GOING_HOME:

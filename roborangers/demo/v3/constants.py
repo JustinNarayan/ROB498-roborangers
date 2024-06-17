@@ -26,7 +26,7 @@ PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
 COMMAND_RATE = 50 # Hz
-SUCCESS_RADIUS = 0.25 # m
+SUCCESS_RADIUS = 0.3 # m
 
 HOVER_ALTITUDE = 0.5 # m
 
@@ -73,7 +73,8 @@ TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
 TARGET_HOVER_ABOVE = 0.5 # m
 
 # Desired standoff radius in the x/y plane from the target object centre (m)
-TARGET_STANDOFF_RADIUS = 0.4 # m
+TARGET_STANDOFF_RADIUS = 0.5 # m
+TARGET_CLOSE_ENOUGH_RADIUS = 1.0 # m
 
 # Maximum allowed x/y distance (m) from the drone to the target before tracking is refused.
 # Prevents erroneous CV detections from sending the drone far away.
@@ -87,6 +88,8 @@ TARGET_SIM_PUBLISH_RATE = 2  # Hz
 ###############################################
 
 DRONE_ID = 'rob498_drone_6'
+
+VICON_RC_CAR_TOPIC = '/vicon/rob498_rc_car_team6/rob498_rc_car_team6'
 
 VICON_TOPIC_NAME        = '/vicon/ROB498_Drone/ROB498_Drone'
 REALSENSE_TOPIC_NAME    = '/camera/pose/sample'

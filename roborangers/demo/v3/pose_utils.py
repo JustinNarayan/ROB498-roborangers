@@ -280,8 +280,8 @@ def transform_cv_target_to_world_frame(
     """
     # ---- 1. CV -> Drone Rotation ----------------------------------------
 
-    # Rotation: -45 deg about body-Y
-    q_cam_to_drone = quaternion_from_euler(0.0, -np.pi / 4, 0.0)
+    # Rotation: 45 deg about body-Y
+    q_cam_to_drone = quaternion_from_euler(0.0, np.pi / 4, 0.0)
     
     # Rotation: From cam to fisheye
     # The camera frame is as follows:
@@ -382,7 +382,9 @@ def xy_distance(pose_a: PoseStamped, pose_b: PoseStamped) -> float:
 def compute_tracking_pose(
     drone_pose: PoseStamped,
     target_pose: PoseStamped,
+    last_pose: PoseStamped,
     standoff_radius: float,
+    close_enough_radius: float,
     hover_above: float,
 ) -> PoseStamped:
     """
@@ -415,18 +417,13 @@ def compute_tracking_pose(
     dy = drone_pose.pose.position.y - ty
     dist_xy = np.sqrt(dx ** 2 + dy ** 2)
 
-    if dist_xy <= standoff_radius:
-        # ----------------------------------------------------------------
-        # ON OR INSIDE the circle — hold current x/y position, only update
-        # yaw so the drone keeps facing the target as it moves.
-        # ----------------------------------------------------------------
-        setpoint_x = drone_pose.pose.position.x
-        setpoint_y = drone_pose.pose.position.y
+    if (dist_xy <= close_enough_radius) and (last_pose is not None):
+        # Stay on same target
+        setpoint_x = last_pose.pose.position.x
+        setpoint_y = last_pose.pose.position.y
         setpoint_z = tz + hover_above
     else:
-        # ----------------------------------------------------------------
-        # OUTSIDE the circle — approach the nearest point on the circle.
-        # ----------------------------------------------------------------
+        # Approach drone
         angle_to_drone = np.arctan2(dy, dx)
         setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
         setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)

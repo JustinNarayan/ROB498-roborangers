@@ -21,13 +21,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from geometry_msgs.msg import PoseStamped
 
-from constants import TARGET_POSE_TOPIC_NAME
-
-###############################################
-#    V I C O N   T A R G E T   T O P I C      #
-###############################################
-
-VICON_RC_CAR_TOPIC = '/rob498_drone_6/Vicon_RC_CAR'
+from constants import TARGET_POSE_TOPIC_NAME, VICON_RC_CAR_TOPIC
 
 ###############################################
 #           F O R W A R D E R   N O D E       #

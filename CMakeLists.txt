@@ -23,7 +23,6 @@ install(PROGRAMS
   roborangers/demo/v2/demo_v2.py
   roborangers/demo/v2/simulate_target_pose.py
   roborangers/demo/v3/demo_v3.py
-  roborangers/demo/v3/simulate_target_pose.py
   roborangers/demo/v3/forward_vicon_target_pose.py
   DESTINATION lib/${PROJECT_NAME}
 )

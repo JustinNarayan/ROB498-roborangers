@@ -108,6 +108,9 @@ class HandlersMixin:
                 self.vision_state.current_vision_pose,
             )
             self.target_state.update(world_pose)
+            
+            ### LOG TARGET POSE
+            self.get_logger().info(f'tx: {world_pose.pose.position.x}, ty: {world_pose.pose.position.y}, tz: {world_pose.pose.position.z}')
         else:
             # VICON: pose is already in the global frame — forward unchanged.
             self.target_state.update(msg)
