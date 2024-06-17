@@ -9,9 +9,9 @@ class MissionType(Enum):
     REALSENSE               = auto()  # Full reliance on Realsense
     REALSENSE_WITH_FALLBACK = auto()  # Realsense primary, fault to Vicon on divergence
 
-CURRENT_MISSION = MissionType.REALSENSE_WITH_FALLBACK
+CURRENT_MISSION = MissionType.VICON
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
-MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 6 # m
+MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
 COMMAND_RATE = 50 # Hz
 SUCCESS_RADIUS = 0.20 # m

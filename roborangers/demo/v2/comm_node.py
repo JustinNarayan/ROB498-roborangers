@@ -67,7 +67,7 @@ class CommNode(HandlersMixin, Node):
             debug_pos_publisher=self._debug_pos_pub,
             debug_ori_publisher=self._debug_ori_pub,
         )
-        self.target_state = TargetState()
+        self.target_state = TargetState(self.get_clock())
         self.survey_state = SurveyState()
 
         ### Mission flags
@@ -224,6 +224,8 @@ class CommNode(HandlersMixin, Node):
 
     def publish_setpoint(self, pose: PoseStamped):
         setpoint_pose = PoseStamped()
+        if pose is None:
+            return setpoint_pose
         setpoint_pose.pose.position.x    = pose.pose.position.x
         setpoint_pose.pose.position.y    = pose.pose.position.y
         setpoint_pose.pose.position.z    = pose.pose.position.z
@@ -336,6 +338,7 @@ class CommNode(HandlersMixin, Node):
 
             elif self.mission_state == MissionState.GOING_HOME:
                 # Land once we are close enough to the home hover pose
+                self.land_requested = False # clear flag
                 if self.at_pose(self.vision_state.get_init_hover_pose()):
                     self.mission_state = MissionState.LANDING
 

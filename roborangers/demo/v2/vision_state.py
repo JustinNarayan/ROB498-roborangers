@@ -185,6 +185,8 @@ class VisionState:
     def get_init_hover_pose(self) -> PoseStamped:
         """Return a pose directly above the init position at HOVER_ALTITUDE."""
         init_hover_pose = PoseStamped()
+        if self.init_vision_pose is None:
+            return init_hover_pose
         init_hover_pose.pose.position.x    = self.init_vision_pose.pose.position.x
         init_hover_pose.pose.position.y    = self.init_vision_pose.pose.position.y
         init_hover_pose.pose.position.z    = self.init_vision_pose.pose.position.z + HOVER_ALTITUDE

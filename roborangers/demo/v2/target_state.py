@@ -27,8 +27,9 @@ class TargetState:
       2. Its header stamp is within TARGET_STALENESS_THRESHOLD_NANOSECONDS of now.
     """
 
-    def __init__(self):
+    def __init__(self, clock):
         self._latest_pose: PoseStamped | None = None
+        self.clock = clock
 
     # ------------------------------------------------------------------
     # Update
@@ -58,13 +59,13 @@ class TargetState:
 
         # Check staleness against msg timestamp
         msg_time_ns  = Time.from_msg(self._latest_pose.header.stamp).nanoseconds
-        now_ns       = self.get_clock().now().nanoseconds
+        now_ns       = self.clock.now().nanoseconds
         age_ns       = now_ns - msg_time_ns
         if age_ns > TARGET_STALENESS_THRESHOLD_NANOSECONDS:
             return False
 
         return True
 
-    def get_pose(self) -> PoseStamped | None:
+    def get_pose(self):
         """Return the latest raw pose (may be None or invalid — check has_valid_target first)."""
         return self._latest_pose
