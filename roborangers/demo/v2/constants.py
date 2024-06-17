@@ -9,7 +9,7 @@ class MissionType(Enum):
     REALSENSE               = auto()  # Full reliance on Realsense
     REALSENSE_WITH_FALLBACK = auto()  # Realsense primary, fault to Vicon on divergence
 
-CURRENT_MISSION = MissionType.VICON
+CURRENT_MISSION = MissionType.REALSENSE_WITH_FALLBACK
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
@@ -23,11 +23,11 @@ HOVER_ALTITUDE = 0.5 # m
 ###############################################
 
 # Max allowed positional distance (m) between Realsense and Vicon before faulting to Vicon
-REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.5   # m
+REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.4   # m
 
 # Max allowed angular distance (rad) between Realsense and Vicon before faulting to Vicon
 # Computed as: 2 * arccos(|q_a · q_b|), giving the geodesic angle between two orientations
-REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD = 0.6 #174 # rad (~10 degrees)
+REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD = 0.174 # rad (~10 degrees)
 
 # If True, continuously publish per-axis position and orientation divergence between
 # Realsense and Vicon to debug topics. Publishes zeros on any axis when only one

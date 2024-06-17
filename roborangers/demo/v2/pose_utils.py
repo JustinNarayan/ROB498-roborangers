@@ -1,5 +1,5 @@
 from geometry_msgs.msg import PoseStamped, PoseArray
-from tf_transformations import euler_from_quaternion, quaternion_from_euler, euler_matrix, quaternion_matrix, quaternion_from_matrix
+from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_multiply, quaternion_conjugate
 import numpy as np
 
 ###############################################
@@ -84,74 +84,43 @@ def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
 #   T R A N S F O R M A T I O N   U T I L S   #
 ###############################################
 
-def make_transform_matrix(x, y, z, roll, pitch, yaw):
-    """
-    Create a 4x4 homogeneous transform matrix from translation and RPY.
-    """
-    T = euler_matrix(roll, pitch, yaw)  # rotation
-    T[0:3, 3] = [x, y, z]                   # translation
-    return T
-
-def pose_to_matrix(pose: PoseStamped):
-    """
-    Convert PoseStamped to 4x4 transform matrix.
-    """
-    pos = pose.pose.position
-    ori = pose.pose.orientation
-
-    T = quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
-    T[0:3, 3] = [pos.x, pos.y, pos.z]
-    return T
-
-def matrix_to_pose(T, frame_id="map"):
-    """
-    Convert 4x4 transform matrix back to PoseStamped.
-    """
-    pose = PoseStamped()
-    pose.header.frame_id = frame_id
-
-    trans = T[0:3, 3]
-    quat = quaternion_from_matrix(T)
-
-    pose.pose.position.x = trans[0]
-    pose.pose.position.y = trans[1]
-    pose.pose.position.z = trans[2]
-
-    pose.pose.orientation.x = quat[0]
-    pose.pose.orientation.y = quat[1]
-    pose.pose.orientation.z = quat[2]
-    pose.pose.orientation.w = quat[3]
-
-    return pose
-
 def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
     """
     Shift Realsense pose into the Vicon/world frame by subtracting the
     known rigid-body offset between the two sensors.
     """
-    # ===================== ADJUST HERE =====================
-    tx = 0 # -X
-    ty = 0     # Y
-    tz = 0   # +Z
-
-    roll  = 0.0
-    pitch = -3.14/4 # -pi/4
-    yaw   = 0.0
-    # ======================================================
+    # Mounting tilt
+    # -45 deg about +Y
+    q_tilt = quaternion_from_euler(0, -np.pi/4, 0)
     
-    # We want REALSENSE → VICON
-    T_rs_to_vicon = make_transform_matrix(tx, ty, tz, roll, pitch, yaw)
+    # Current pose
+    q_raw = [
+        pose_realsense.pose.orientation.x,
+        pose_realsense.pose.orientation.y,
+        pose_realsense.pose.orientation.z,
+        pose_realsense.pose.orientation.w
+    ]
+    
+    # Corrected
+    q_corrected = quaternion_multiply(
+        q_raw,
+        q_tilt
+    )
 
-    # Convert input pose to matrix
-    T_pose_rs = pose_to_matrix(pose_realsense)
+    # Apply positional offset from drone -> vicon
+    vicon_to_rs = [0.23, 0, -0.12] # x,y,z
 
-    # Apply transform
-    T_pose_vicon = T_rs_to_vicon @ T_pose_rs
-
-    # Convert back
-    pose_vicon = matrix_to_pose(T_pose_vicon, frame_id="map")
-
-    return pose_vicon
+    result = PoseStamped()
+    result.pose.position.x = pose_realsense.pose.position.x - vicon_to_rs[0]
+    result.pose.position.y = pose_realsense.pose.position.y - vicon_to_rs[1]
+    result.pose.position.z = pose_realsense.pose.position.z - vicon_to_rs[2]
+    result.pose.orientation.x = q_corrected[0]
+    result.pose.orientation.y = q_corrected[1]
+    result.pose.orientation.z = q_corrected[2]
+    result.pose.orientation.w = q_corrected[3]
+    
+    return result
+    
 
 ###############################################
 #     O R I E N T A T I O N   U T I L S       #
