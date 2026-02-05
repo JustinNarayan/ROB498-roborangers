@@ -12,7 +12,7 @@ class CameraPoseForward(Node):
         qos_profile = QoSProfile(depth=10)
         qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
         
-        self.subscription(
+        self.subscription = self.create_subscription(
             Odometry,
             '/camera/pose/sample',
             self.pose_callback,
