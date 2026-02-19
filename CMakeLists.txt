@@ -12,8 +12,8 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Install Python executables
 install(PROGRAMS
-  src/fe2/fe2.py
-  src/realsense.py
+  roborangers/fe2/fe2.py
+  roborangers/realsense.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
