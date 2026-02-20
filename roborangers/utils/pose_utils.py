@@ -1,4 +1,6 @@
 from geometry_msgs.msg import PoseStamped
+from tf_transformations import euler_from_quaternion, quaternion_from_euler
+import numpy as np
 
 def compute_average_pose(pose_list):
     """
