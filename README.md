@@ -6,8 +6,9 @@
 Upon creation of a new node, make sure to add it in CMakeLists.txt
 
 ## Building
-(1) Go to outer workspace folder (i.e. ~/ws) and type `colcon build`
-(2) Type `source install/setup.bash`
+(1) Go to outer workspace folder (i.e. ~/ws) and type `rm -rf build install`
+(2) and type `colcon build --symlink-install --packages-select roborangers`
+(3) Type `source install/setup.bash`
 
 ## Running
 Package is `roborangers`.

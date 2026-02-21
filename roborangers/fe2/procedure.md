@@ -11,7 +11,7 @@
 
 **Flight Exercise #2 Test Procedure**
 
-1. Make sure your drone is connected to the course WiFi network and you are able to `ping` the ground control server at 10.42.0.100 and receive Vicon pose messages.
+1. Make sure your drone is connected to the course WiFi network and you are able to `ping` the ground control server at 10.42.0.1 (NOT 10.42.0.100) and receive Vicon pose messages.
 2. The TA will send test service calls and check if your drone is able to receive the commands successfully.
 3. Once ready, the TA will instruct you to arm the drone and then send the “launch” command. Your drone may take off autonomously or under manual control.
 4. When you think your drone is ready for scoring, let the TA know and they will start collecting data. A “test” command will be sent to the drone. Vicon pose streaming will be stopped for the Vicon-free test.

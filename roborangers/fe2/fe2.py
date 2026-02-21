@@ -21,11 +21,14 @@ from roborangers.utils.pose_utils import compute_average_pose, subtract_poses
 ###############################################
 
 DRONE_ID = 'rob498_drone_06'
+VICON_TOPIC_NAME = '/vicon/fixedwing_robot_2/fixedwing_robot_2' # check via `ros2 topic list`
 INIT_VICON_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose
 TARGET_HEIGHT = 1.5 # meters
 QOS_DEPTH = 10 # number of messages to store
 COMMAND_RATE = 20 # Hz, recommended in procedure.md
 OFFBOARD_MODE = 'OFFBOARD'
+DEBUGGING_LOOP_LOGS = False
+DEBUGGING_POSE = True
 
 ###############################################
 #            V I C O N   S T A T E            #
@@ -75,30 +78,30 @@ class CommNode(Node):
         ### Testing Services
         # Generate callbacks to respond to commands for launch, test, land, abort
         self.srv_launch = self.create_service(
-            Trigger, f'{DRONE_ID}/comm/launch', callback_launch
+            Trigger, f'{DRONE_ID}/comm/launch', self.callback_launch
         )
         self.srv_test = self.create_service(
-            Trigger, f'{DRONE_ID}/comm/test', callback_test
+            Trigger, f'{DRONE_ID}/comm/test', self.callback_test
         )
         self.srv_land = self.create_service(
-            Trigger, f'{DRONE_ID}/comm/land', callback_land
+            Trigger, f'{DRONE_ID}/comm/land', self.callback_land
         )
         self.srv_abort = self.create_service(
-            Trigger, f'{DRONE_ID}/comm/abort', callback_abort
+            Trigger, f'{DRONE_ID}/comm/abort', self.callback_abort
         )
         
         ### VICON
         # Drone subscribes to Vicon pose
         qos_vicon_pose = QoSProfile(depth=QOS_DEPTH)
         self.sub_vicon_pose = self.create_subscription(
-            PoseStamped, '/vicon/ROB498_Drone/ROB498_Drone', callback_vicon_pose, qos_vicon_pose
+            PoseStamped, VICON_TOPIC_NAME, self.callback_vicon_pose, qos_vicon_pose
         )
         
         ### MAVROS
         # Drone subscribes to MAVROS state
         qos_mavros_state = QoSProfile(depth=QOS_DEPTH)
         self.sub_mavros_state = self.create_subscription(
-            State, '/mavros/state', callback_mavros_state, qos_mavros_state
+            State, '/mavros/state', self.callback_mavros_state, qos_mavros_state
         )
         # Drone publishes target setpoint over MAVROS to flight controller
         qos_mavros_setpoint = QoSProfile(depth=QOS_DEPTH)
@@ -121,6 +124,49 @@ class CommNode(Node):
         self.cli_set_mode.wait_for_service()
         self.cli_arming.wait_for_service()
         self.cli_land.wait_for_service()
+    
+    '''
+    Service and Subscription Callbacks
+    '''
+    def callback_launch(
+        self, 
+        request: Trigger.Request,
+        response: Trigger.Response
+    ) -> Trigger.Response:
+        return handle_launch(self, request, response)
+
+    def callback_test(
+        self, 
+        request: Trigger.Request,
+        response: Trigger.Response
+    ) -> Trigger.Response:
+        return handle_test(self, request, response)
+
+    def callback_land(
+        self, 
+        request: Trigger.Request,
+        response: Trigger.Response
+    ) -> Trigger.Response:
+        return handle_land(self, request, response)
+
+    def callback_abort(
+        self, 
+        request: Trigger.Request,
+        response: Trigger.Response
+    ) -> Trigger.Response:
+        return handle_abort(self, request, response)
+
+    def callback_vicon_pose(
+        self, 
+        msg: PoseStamped
+    ) -> None:
+        handle_vicon_pose(self, msg)
+
+    def callback_mavros_state(
+        self, 
+        msg: State
+    ) -> None:
+        handle_mavros_state(self, msg)      
         
     '''
     Client request commands
@@ -143,6 +189,9 @@ class CommNode(Node):
     Drone continuous control logic, running at COMMAND_RATE
     '''
     def control_loop(self):
+        if DEBUGGING_LOOP_LOGS:
+            self.get_logger().info('Control loop!')
+        
         # Ensure initial pose has been calibrated
         if self.vicon_state.init_vicon_pose is None:
             return
@@ -229,9 +278,12 @@ def handle_abort(
     return response
 
 def handle_vicon_pose(
-    self: CommNode, msg: 
-    PoseStamped
+    self: CommNode, 
+    msg: PoseStamped
 ) -> None:
+    if DEBUGGING_LOOP_LOGS:
+        self.get_logger().info('Vicon received!')
+        
     # Store initial poses to compute neutral init_vicon_pose
     if len(self.vicon_state.init_vicon_pose_list) < INIT_VICON_POSE_COUNT_MAX:
         self.vicon_state.init_vicon_pose_list.append(msg)
@@ -243,56 +295,22 @@ def handle_vicon_pose(
         return
     # Current pose is offset from the init
     self.vicon_state.current_vicon_pose = subtract_poses(msg, self.vicon_state.init_vicon_pose)
+    
+    if DEBUGGING_POSE:
+        self.get_logger().info(f'\
+            (x:{self.vicon_state.current_vicon_pose.pose.position.x}, \
+            y:{self.vicon_state.current_vicon_pose.pose.position.y}, \
+            z:{self.vicon_state.current_vicon_pose.pose.position.x}),\
+            (x:{self.vicon_state.current_vicon_pose.pose.orientation.x},\
+            y:{self.vicon_state.current_vicon_pose.pose.orientation.y},\
+            z:{self.vicon_state.current_vicon_pose.pose.orientation.z},\
+            w:{self.vicon_state.current_vicon_pose.pose.orientation.w})')
 
 def handle_mavros_state(
     self: CommNode, 
     msg: State
 ) -> None:
-    self.current_mavros_state = msg
-
-###############################################
-#              C A L L B A C K S              #
-###############################################
-
-def callback_launch(
-    self: CommNode, 
-    request: Trigger.Request,
-    response: Trigger.Response
-) -> Trigger.Response:
-    return handle_launch(self, request, response)
-
-def callback_test(
-    self: CommNode, 
-    request: Trigger.Request,
-    response: Trigger.Response
-) -> Trigger.Response:
-    return handle_test(self, request, response)
-
-def callback_land(
-    self: CommNode, 
-    request: Trigger.Request,
-    response: Trigger.Response
-) -> Trigger.Response:
-    return handle_land(self, request, response)
-
-def callback_abort(
-    self: CommNode, 
-    request: Trigger.Request,
-    response: Trigger.Response
-) -> Trigger.Response:
-    return handle_abort(self, request, response)
-
-def callback_vicon_pose(
-    self: CommNode, 
-    msg: PoseStamped
-) -> None:
-    handle_vicon_pose(self, msg)
-
-def callback_mavros_state(
-    self: CommNode, 
-    msg: State
-) -> None:
-    handle_mavros_state(self, msg)            
+    self.current_mavros_state = msg      
 
 ###############################################
 #              M A I N   L O O P              #
