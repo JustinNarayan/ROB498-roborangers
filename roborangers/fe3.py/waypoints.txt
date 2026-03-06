@@ -1,0 +1,71 @@
+`ros2 topic echo /rob498_drone_6/comm/waypoints`
+
+header:
+  stamp:
+    sec: 1772809884
+    nanosec: 428233609
+  frame_id: vicon/world
+poses:
+- position:
+    x: -2.3
+    y: 2.3
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: 0.0
+    y: 2.3
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: 2.8
+    y: 2.3
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: 1.5
+    y: 0.1
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: 2.0
+    y: -2.3
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: 1.0
+    y: -2.8
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
+- position:
+    x: -2.5
+    y: -2.5
+    z: 0.5
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0
