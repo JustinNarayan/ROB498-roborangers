@@ -1,4 +1,4 @@
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseArray
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 import numpy as np
 
@@ -71,7 +71,6 @@ def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
     Compute pose distance (a - b).
     """
     
-
     # Positions
     delta_x = pose_a.pose.position.x - pose_b.pose.position.x
     delta_y = pose_a.pose.position.y - pose_b.pose.position.y
@@ -79,3 +78,35 @@ def distance_poses(pose_a: PoseStamped, pose_b: PoseStamped):
     distance = (delta_x**2 + delta_y**2 + delta_z**2)**(1/2)
 
     return distance
+
+def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
+    # Define transform from vicon to realsense in the map frame
+    vicon_to_realsense = PoseStamped()
+    vicon_to_realsense.header.frame_id = 'map'
+    
+    # Position
+    vicon_to_realsense.pose.position.x = 0.23 # 0.23 "forward" from vicon to realsense
+    vicon_to_realsense.pose.position.y = 0.0
+    vicon_to_realsense.pose.position.z = -0.12 # 0.12 "down" from vicon to realsense
+    
+    # Default Quaternion
+    vicon_to_realsense.pose.orientation.x = 0.0
+    vicon_to_realsense.pose.orientation.y = 0.0
+    vicon_to_realsense.pose.orientation.z = 0.0
+    vicon_to_realsense.pose.orientation.w = 1.0
+    
+    # Subtract this transform
+    # Now, (0, 0, 0) in the realsense frame is the vicon origin in the map frame
+    shifted_realsense = subtract_poses(pose_realsense, vicon_to_realsense)
+    shifted_realsense.header.frame_id = 'map'
+    
+    # Return shifted pose
+    return shifted_realsense
+
+def unpack_pose_array(pose_array: PoseArray):
+    pose_stamped_list = []
+
+    for pose in pose_array.poses:
+        pose_stamped_list.append(pose)
+    
+    return pose_stamped_list
