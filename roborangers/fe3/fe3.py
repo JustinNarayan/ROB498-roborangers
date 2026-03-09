@@ -64,8 +64,8 @@ PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT =  6 # m
 
 COMMAND_RATE = 50 # Hz
-SUCCESS_RADIUS = 0.20 # cm, smaller than the 40 used during the test
-LOITER_TIME_NANOSECONDS = 3 * 10e9
+SUCCESS_RADIUS = 0.20 # m, smaller than the 40 cm used during the test
+LOITER_TIME_NANOSECONDS = 3e9
 
 HOVER_ALTITUDE = 0.5
 
@@ -126,11 +126,10 @@ class VisionState:
         self.init_vision_pose_list.append(pose)
         
         # Compute init if all poses recieved
-        if len(self.init_vision_pose) >= INIT_VISION_POSE_COUNT_MAX:
+        if len(self.init_vision_pose_list) >= INIT_VISION_POSE_COUNT_MAX:
             self.init_vision_pose = compute_average_pose(
                 self.init_vision_pose_list
             )
-            self.get_logger().info('Initial Pose Computed!')
             
     def update_current_pose(self, pose: PoseStamped):
         self.current_vision_pose = pose
@@ -140,9 +139,15 @@ class VisionState:
             self.update_init_pose(pose)
     
     def get_init_hover_pose(self):
-        # Get the init pose, but hovering
-        init_hover_pose = self.init_vision_pose
-        init_hover_pose.pose.position.z = HOVER_ALTITUDE
+        # Get the init pose
+        init_hover_pose = PoseStamped()
+        init_hover_pose.pose.position.x    = self.init_vision_pose.pose.position.x
+        init_hover_pose.pose.position.y    = self.init_vision_pose.pose.position.y
+        init_hover_pose.pose.position.z    = self.init_vision_pose.pose.position.z + HOVER_ALTITUDE
+        init_hover_pose.pose.orientation.x = self.init_vision_pose.pose.orientation.x
+        init_hover_pose.pose.orientation.y = self.init_vision_pose.pose.orientation.y
+        init_hover_pose.pose.orientation.z = self.init_vision_pose.pose.orientation.z
+        init_hover_pose.pose.orientation.w = self.init_vision_pose.pose.orientation.w
         return init_hover_pose
 
 ###############################################
@@ -157,7 +162,7 @@ class CommNode(Node):
         self.vision_state = VisionState()
         
         ### MISSION data
-        self.mission_state = MissionState()
+        self.mission_state = MissionState.INITIALIZING
         self.waypoints = []
         self.num_waypoints = 0
         
@@ -219,7 +224,7 @@ class CommNode(Node):
         # Drone receives waypoints
         qos_waypoints = QoSProfile(depth=QOS_DEPTH)
         qos_waypoints.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.sub_vicon_pose = self.create_subscription(
+        self.sub_waypoints = self.create_subscription(
             PoseArray, 
             WAYPOINTS_TOPIC_NAME, 
             self.callback_waypoints, 
@@ -263,7 +268,7 @@ class CommNode(Node):
     General utilities
     '''
     def update_pose_header(self, pose: PoseStamped):
-        pose.header.frame_id = 'map'
+        pose.header.frame_id = 'map' # we send everything for MAVROS in 'map' frame
         pose.header.stamp = self.get_clock().now().to_msg()
         return pose
         
@@ -325,18 +330,18 @@ class CommNode(Node):
         response: Trigger.Response
     ) -> Trigger.Response:
         return self.handle_abort(request, response)
-
-    def callback_vicon_pose(
-        self, 
-        msg: Odometry
-    ) -> None:
-        self.handle_vicon_pose(msg)
-    
+  
     def callback_camera_pose(
         self, 
         msg: Odometry
     ) -> None:
         self.handle_camera_pose(msg)
+        
+    def callback_vicon_pose(
+        self, 
+        msg: PoseStamped
+    ) -> None:
+        self.handle_vicon_pose(msg)
 
     def callback_mavros_state(
         self, 
@@ -369,7 +374,7 @@ class CommNode(Node):
         setpoint_pose.pose.orientation.z = 0 if pose is None else pose.pose.orientation.z
         setpoint_pose.pose.orientation.w = 1 if pose is None else pose.pose.orientation.w
         
-        # Update header
+        # Update header -> okay to mutate setpoint pose
         setpoint_pose = self.update_pose_header(setpoint_pose)
         
         # Publish
@@ -381,11 +386,11 @@ class CommNode(Node):
         # Initialize pose to publish
         redirected_pose = PoseStamped()
         
-        # Copy over pose data
-        # Since pose has been processed, copying should be fine
-        redirected_pose = self.vision_state.current_vision_pose
+        # Copy over pose data, prevents mutation
+        redirected_pose.pose = self.vision_state.current_vision_pose.pose
+        redirected_pose.header = self.vision_state.current_vision_pose.header
         
-        # Update header
+        # Update header -> okay to mutate redicted pose
         redirected_pose = self.update_pose_header(redirected_pose)
         
         # Publish
@@ -398,27 +403,27 @@ class CommNode(Node):
         self.get_logger().info('Requesting offboard')
         req = SetMode.Request()
         req.custom_mode = OFFBOARD_MODE
-        self.cli_set_mode.call_async(req)
+        self.cli_set_mode.call_async(req) # Ok not to check await response
         self.get_logger().info('Requested offboard')
     
     def request_altitude_mode(self):
         self.get_logger().info('Requesting altitude')
         req = SetMode.Request()
         req.custom_mode = ALTITUDE_MODE
-        self.cli_set_mode.call_async(req)
+        self.cli_set_mode.call_async(req) # Ok not to check await response
         self.get_logger().info('Requested altitude')
     
     def request_arm(self):
         self.get_logger().info('Requesting arm')
         req = CommandBool.Request()
         req.value = True
-        self.cli_arming.call_async(req)
+        self.cli_arming.call_async(req) # Ok not to check await response
         self.get_logger().info('Requested arm')
     
     def request_land(self):
         self.get_logger().info('Requesting land')
         req = CommandTOL.Request()
-        self.cli_land.call_async(req)
+        self.cli_land.call_async(req) # Ok not to check await response
         self.get_logger().info('Requested land')
     
     '''
@@ -509,9 +514,9 @@ class CommNode(Node):
         ### CLEAR FLAGS
         # We only really are about launch and test flags
         # Land, Abort, Emergency Stop, Manual Override can all persist since they end flight
-        if self.mission_state is not MissionState.AWAITING_LAUNCH:
+        if self.mission_state != MissionState.AWAITING_LAUNCH:
             self.launch_requested = False
-        if self.mission_state is not MissionState.AWAITING_TEST:
+        if self.mission_state != MissionState.AWAITING_TEST:
             self.test_requested = False
         
         ### PUBLISHING
@@ -531,8 +536,15 @@ class CommNode(Node):
             self.publish_setpoint(self.get_current_target())
             
         # Redirect vision pose
-        if self.mission_state is not MissionState.INITIALIZING:
+        if self.mission_state != MissionState.INITIALIZING:
             self.publish_vision_pose()
+        
+            # Monitor for emergency stop
+            # Need valid init pose for this
+            self.emergency_stop_requested = self.emergency_stop_requested or \
+                distance_poses(
+                    self.vision_state.current_vision_pose, self.vision_state.init_vision_pose
+                ) >= MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT
             
         ### MAVROS STATE CHECKS
         _is_connected = self.current_mavros_state.connected
@@ -540,12 +552,6 @@ class CommNode(Node):
         _is_offboard = self.current_mavros_state.mode == OFFBOARD_MODE
         if not _is_connected:
             return # Not connected
-        
-        # Monitor for emergency stop
-        self.emergency_stop_requested = self.emergency_stop_requested or \
-            distance_poses(
-                self.vision_state.current_vision_pose, self.vision_state.init_vision_pose
-            ) >= MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT
             
         ### GET TO OFFBOARD
         if self.mission_state not in [
@@ -569,6 +575,8 @@ class CommNode(Node):
                         self.has_got_to_offboard and PERMIT_MANUAL_OVERRIDE
                     # Try for offboard if not manually overriden
                     if not self.manual_override_requested:
+                        # OK if we get rejected due to setpoints not published
+                        # Keep trying until we get it
                         self.request_offboard_mode()
                         
                 else:
@@ -579,14 +587,10 @@ class CommNode(Node):
             self.has_got_to_offboard = False
         
         ### WAYPOINT MANAGEMENT
-        if self.mission_state in [
-            MissionState.LOITERING_AT_WAYPOINT
-        ]:
+        if self.mission_state == MissionState.LOITERING_AT_WAYPOINT:
             self.record_loitering_at_waypoint()
         
-        if self.mission_state in [
-            MissionState.UPDATING_WAYPOINT
-        ]:
+        if self.mission_state == MissionState.UPDATING_WAYPOINT:
             self.update_waypoint()
                 
     '''
@@ -636,7 +640,7 @@ class CommNode(Node):
         response: Trigger.Response
     ) -> Trigger.Response:
         self.get_logger().info('Land Requested.')
-        self.test_requested = True
+        self.land_requested = True
         response.success = True
         return response
 
