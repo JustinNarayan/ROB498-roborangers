@@ -107,6 +107,8 @@ def unpack_pose_array(pose_array: PoseArray):
     pose_stamped_list = []
 
     for pose in pose_array.poses:
-        pose_stamped_list.append(pose)
+        ps = PoseStamped()
+        ps.pose = pose
+        pose_stamped_list.append(ps)
     
     return pose_stamped_list

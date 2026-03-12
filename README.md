@@ -25,3 +25,11 @@ After executing the "Building" steps:
 (5) Run ROS node `ros2 run roborangers fe2.py`
 (6) Wait for `Initial Pose Computed`
 (7) Run Launch `ros2 service call /rob498_drone_06/comm/launch std_srvs/srv/Trigger`
+
+# Flight Exercise 3
+(1) Set `CURRENT_MISSION` to `MissionType.VICON` or `MissionType.REALSENSE`
+(2) Run MAVROS `ros2 launch roborangers mavros.launch.py`
+(4) Ensure `ros2 topic echo /camera/pose/sample --truncate-length 5` is logical
+(3) { in arena } `ros2 launch realsense2_camera rs_launch.py`
+(4) Run ROS node `ros2 run roborangers fe2.py`
+(5)

@@ -52,6 +52,12 @@ poses:
 '''
 
 ###############################################
+#              D E B U G G I N G              #
+###############################################
+
+DEBUG_ALL_WAYPOINTS = True
+
+###############################################
 #      M I S S I O N   V A R I A B L E S      #
 ###############################################
 
@@ -59,7 +65,7 @@ class MissionType(Enum):
     VICON = auto()
     REALSENSE = auto()
 
-CURRENT_MISSION = MissionType.VICON
+CURRENT_MISSION = MissionType.REALSENSE
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT =  6 # m
 
@@ -611,8 +617,18 @@ class CommNode(Node):
         self,
         msg: PoseArray
     ) -> Trigger.Response:
-        self.waypoints = unpack_pose_array(msg)
-        self.num_waypoints = len(self.waypoints)
+        if self.num_waypoints == 0:
+            self.waypoints = unpack_pose_array(msg)
+            self.num_waypoints = len(self.waypoints)
+            
+            if DEBUG_ALL_WAYPOINTS:
+                for waypoint in self.waypoints:
+                    self.get_logger().info(f'Waypoint: ( \
+                        {waypoint.pose.position.x}, \
+                        {waypoint.pose.position.y}, \
+                        {waypoint.pose.position.z} \
+                    )')
+                    
     
     def handle_launch(
         self, 
