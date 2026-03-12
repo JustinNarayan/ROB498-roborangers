@@ -17,6 +17,7 @@ install(PROGRAMS
   roborangers/fe2/fe2_realsense.py
   roborangers/realsense.py
   roborangers/vicon.py
+  roborangers/fe3/fe3.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
