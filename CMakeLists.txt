@@ -24,6 +24,7 @@ install(PROGRAMS
   roborangers/demo/v2/simulate_target_pose.py
   roborangers/demo/v3/demo_v3.py
   roborangers/demo/v3/forward_vicon_target_pose.py
+  roborangers/opencv/yolov5_video_inference.py
   roborangers/yolo/imx219_yolov5_onnx.py
   roborangers/yolo/centroid_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
