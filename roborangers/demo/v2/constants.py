@@ -63,6 +63,9 @@ TARGET_HOVER_ABOVE = 0.5 # m
 # Desired standoff radius in the x/y plane from the target object centre (m)
 TARGET_STANDOFF_RADIUS = 0.5 # m
 
+# Rate at which the target pose simulator publishes (Hz)
+TARGET_SIM_PUBLISH_RATE = 2  # Hz
+
 ###############################################
 #              R O S   C O M M S              #
 ###############################################
