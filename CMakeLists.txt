@@ -18,6 +18,8 @@ install(PROGRAMS
   roborangers/realsense.py
   roborangers/vicon.py
   roborangers/fe3/fe3.py
+  roborangers/demo/v0/demo_v0.py
+  roborangers/demo/v1/demo_v1.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
