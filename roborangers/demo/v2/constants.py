@@ -5,18 +5,18 @@
 from enum import Enum, auto
 
 class MissionType(Enum):
-    VICON = auto()
-    REALSENSE = auto()
+    VICON                   = auto()  # Full reliance on Vicon
+    REALSENSE               = auto()  # Full reliance on Realsense
+    REALSENSE_WITH_FALLBACK = auto()  # Realsense primary, fault to Vicon on divergence
 
-CURRENT_MISSION = MissionType.REALSENSE
+CURRENT_MISSION = MissionType.REALSENSE_WITH_FALLBACK
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 6 # m
 
 COMMAND_RATE = 50 # Hz
-SUCCESS_RADIUS = 0.20 # m, smaller than the 40 cm used during the test
-LOITER_TIME_NANOSECONDS = 3e9
+SUCCESS_RADIUS = 0.20 # m
 
-HOVER_ALTITUDE = 0.5
+HOVER_ALTITUDE = 0.5 # m
 
 ###############################################
 #              D E B U G G I N G              #
@@ -25,44 +25,74 @@ HOVER_ALTITUDE = 0.5
 DEBUG_ALL_WAYPOINTS = True
 
 ###############################################
+#    V I S I O N   F A L L B A C K            #
+###############################################
+
+# Max allowed positional distance (m) between Realsense and Vicon before faulting to Vicon
+REALSENSE_VICON_DIVERGENCE_THRESHOLD = 0.3 # m
+
+###############################################
+#         S U R V E Y   S T A T E             #
+###############################################
+
+# How many radians the drone yaws per step while surveying
+SURVEY_ANGULAR_STEP_RADIANS = 0.1745  # ~10 degrees per step
+
+# How long the drone holds each angular step before advancing (nanoseconds)
+SURVEY_STEP_HOLD_TIME_NANOSECONDS = 1e9  # 1 second per step
+
+###############################################
+#          T A R G E T   T R A C K I N G      #
+###############################################
+
+# How long a received target pose is considered valid (nanoseconds)
+TARGET_STALENESS_THRESHOLD_NANOSECONDS = 1e9  # 1 second
+
+# Desired height above the target object (m)
+TARGET_HOVER_ABOVE = 0.5 # m
+
+# Desired standoff radius in the x/y plane from the target object centre (m)
+TARGET_STANDOFF_RADIUS = 0.5 # m
+
+###############################################
 #              R O S   C O M M S              #
 ###############################################
 
 DRONE_ID = 'rob498_drone_6'
 
-VICON_TOPIC_NAME = '/vicon/ROB498_Drone/ROB498_Drone'
-REALSENSE_TOPIC_NAME = '/camera/pose/sample'
+VICON_TOPIC_NAME        = '/vicon/ROB498_Drone/ROB498_Drone'
+REALSENSE_TOPIC_NAME    = '/camera/pose/sample'
+TARGET_POSE_TOPIC_NAME  = f'{DRONE_ID}/target/pose'
 
-LAND_SERVICE_NAME = f'{DRONE_ID}/comm/land'
+LAND_SERVICE_NAME   = f'{DRONE_ID}/comm/land'
 LAUNCH_SERVICE_NAME = f'{DRONE_ID}/comm/launch'
-ABORT_SERVICE_NAME = f'{DRONE_ID}/comm/abort'
-TEST_SERVICE_NAME = f'{DRONE_ID}/comm/test'
-WAYPOINTS_TOPIC_NAME = f'{DRONE_ID}/comm/waypoints'
+ABORT_SERVICE_NAME  = f'{DRONE_ID}/comm/abort'
+TEST_SERVICE_NAME   = f'{DRONE_ID}/comm/test'
 
-MAVROS_STATE_TOPIC_NAME = f'/mavros/state'
-MAVROS_SETPOINT_TOPIC_NAME = f'/mavros/setpoint_position/local'
-MAVROS_VISION_POSE_TOPIC_NAME = f'/mavros/vision_pose/pose'
+MAVROS_STATE_TOPIC_NAME         = '/mavros/state'
+MAVROS_SETPOINT_TOPIC_NAME      = '/mavros/setpoint_position/local'
+MAVROS_VISION_POSE_TOPIC_NAME   = '/mavros/vision_pose/pose'
 
-QOS_DEPTH = 10 # number of messages to store
-OFFBOARD_MODE = 'OFFBOARD'
-ALTITUDE_MODE = 'ALTCTL'
+QOS_DEPTH       = 10        # number of messages to store
+OFFBOARD_MODE   = 'OFFBOARD'
+ALTITUDE_MODE   = 'ALTCTL'
 
 ###############################################
 #          M I S S I O N   S T A T E          #
 ###############################################
 
 class MissionState(Enum):
-    INITIALIZING            = 'INITIALIZING'
-    AWAITING_LAUNCH         = 'AWAITING_LAUNCH'
-    AWAITING_TEST           = 'AWAITING_TEST'
-    EN_ROUTE_TO_WAYPOINT    = 'EN_ROUTE_TO_WAYPOINT'
-    LOITERING_AT_WAYPOINT   = 'LOITERING_AT_WAYPOINT'
-    UPDATING_WAYPOINT       = 'UPDATING_WAYPOINT'
-    LANDING                 = 'LANDING'
-    MANUAL_OVERRIDE         = 'MANUAL_OVERRIDE'
+    INITIALIZING    = 'INITIALIZING'    # Computing init pose from vision sensor
+    AWAITING_LAUNCH = 'AWAITING_LAUNCH' # Waiting for /launch service call
+    AWAITING_TEST   = 'AWAITING_TEST'   # Waiting for /test service call
+    SURVEYING       = 'SURVEYING'       # Rotating in place, searching for target
+    TRACKING_TARGET = 'TRACKING_TARGET' # Navigating to standoff pose around target
+    GOING_HOME      = 'GOING_HOME'      # Returning to init hover pose before landing
+    LANDING         = 'LANDING'         # Executing MAVROS land command
+    MANUAL_OVERRIDE = 'MANUAL_OVERRIDE' # Under manual RC control
 
 ###############################################
-#            V I C O N   S T A T E            #
+#            V I S I O N   S T A T E          #
 ###############################################
 
 INIT_VISION_POSE_COUNT_MAX = 50  # aggregate this many poses on start to determine init pose

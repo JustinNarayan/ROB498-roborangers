@@ -5,29 +5,31 @@ from std_srvs.srv import Trigger
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 
 # Messages
-from geometry_msgs.msg import PoseStamped, PoseArray
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 
-# Quality of Service for subscriptions
+# Quality of Service
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 # Math utilities
-from roborangers.utils.pose_utils import distance_poses
+from pose_utils import distance_poses, compute_tracking_pose
 
-# Local imports
+# Local modules
 from constants import (
     DRONE_ID,
     CURRENT_MISSION, MissionType, MissionState,
     PERMIT_MANUAL_OVERRIDE, MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT,
-    COMMAND_RATE, SUCCESS_RADIUS, LOITER_TIME_NANOSECONDS,
-    VICON_TOPIC_NAME, REALSENSE_TOPIC_NAME,
-    LAND_SERVICE_NAME, LAUNCH_SERVICE_NAME, ABORT_SERVICE_NAME,
-    TEST_SERVICE_NAME, WAYPOINTS_TOPIC_NAME,
+    COMMAND_RATE, SUCCESS_RADIUS,
+    VICON_TOPIC_NAME, REALSENSE_TOPIC_NAME, TARGET_POSE_TOPIC_NAME,
+    LAND_SERVICE_NAME, LAUNCH_SERVICE_NAME, ABORT_SERVICE_NAME, TEST_SERVICE_NAME,
     MAVROS_STATE_TOPIC_NAME, MAVROS_SETPOINT_TOPIC_NAME, MAVROS_VISION_POSE_TOPIC_NAME,
-    QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE
+    QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE,
+    TARGET_STANDOFF_RADIUS, TARGET_HOVER_ABOVE,
 )
 from vision_state import VisionState
+from target_state import TargetState
+from survey_state import SurveyState
 from handlers import HandlersMixin
 
 ###############################################
@@ -37,448 +39,377 @@ from handlers import HandlersMixin
 class CommNode(HandlersMixin, Node):
     def __init__(self):
         super().__init__(DRONE_ID)
-        
-        ### VISION data
-        self.vision_state = VisionState()
-        
-        ### MISSION data
-        self.mission_state = MissionState.INITIALIZING
-        self.waypoints = []
-        self.num_waypoints = 0
-        
-        ### State variables
-        self.has_got_to_offboard = False # for manual override, prevents auto kick-back to OFFBOARD
-        self.current_waypoint = 0
-        self.launch_requested = False
-        self.test_requested = False
-        self.land_requested = False
-        self.abort_requested = False
-        self.manual_override_requested = False
-        self.emergency_stop_requested = False
-        self.time_waypoint_reached = None
-        
-        ### MAVROS State variables
-        self.current_mavros_state = State()
-        
-        ### Control loop information
-        self.control_timer = self.create_timer( 1.0 / COMMAND_RATE, self.control_loop )
-        
-        ### Testing Services
-        # Generate callbacks to respond to commands for launch, test, land, abort
-        self.srv_launch = self.create_service(
-            Trigger, LAUNCH_SERVICE_NAME, self.callback_launch
-        )
-        self.srv_test = self.create_service(
-            Trigger, TEST_SERVICE_NAME, self.callback_test
-        )
-        self.srv_land = self.create_service(
-            Trigger, LAND_SERVICE_NAME, self.callback_land
-        )
-        self.srv_abort = self.create_service(
-            Trigger, ABORT_SERVICE_NAME, self.callback_abort
-        )
-        
-        ### VISION
-        if CURRENT_MISSION is MissionType.VICON:
-            # Drone subscribes to vision pose
+
+        ### Sub-states
+        self.vision_state   = VisionState(logger=self.get_logger()) # For divergence errors
+        self.target_state   = TargetState()
+        self.survey_state   = SurveyState()
+
+        ### Mission flags
+        self.mission_state          = MissionState.INITIALIZING
+        self.launch_requested       = False
+        self.test_requested         = False
+        self.land_requested         = False   # graceful: go home first
+        self.abort_requested        = False   # immediate: land in place
+        self.manual_override_requested  = False
+        self.emergency_stop_requested   = False
+
+        ### MAVROS tracking
+        self.current_mavros_state   = State()
+        self.has_got_to_offboard    = False
+
+        ### Control loop
+        self.control_timer = self.create_timer(1.0 / COMMAND_RATE, self.control_loop)
+
+        ### Services
+        self.srv_launch = self.create_service(Trigger, LAUNCH_SERVICE_NAME, self.callback_launch)
+        self.srv_test   = self.create_service(Trigger, TEST_SERVICE_NAME,   self.callback_test)
+        self.srv_land   = self.create_service(Trigger, LAND_SERVICE_NAME,   self.callback_land)
+        self.srv_abort  = self.create_service(Trigger, ABORT_SERVICE_NAME,  self.callback_abort)
+
+        ### Vision subscriptions
+        if CURRENT_MISSION in (MissionType.VICON, MissionType.REALSENSE_WITH_FALLBACK):
+            # Vicon received
             qos_vicon_pose = QoSProfile(depth=QOS_DEPTH)
             qos_vicon_pose.reliability = ReliabilityPolicy.BEST_EFFORT
             self.sub_vicon_pose = self.create_subscription(
-                PoseStamped, 
-                VICON_TOPIC_NAME, 
-                self.callback_vicon_pose, 
-                qos_vicon_pose
+                PoseStamped, VICON_TOPIC_NAME, self.callback_vicon_pose, qos_vicon_pose
             )
-        else: # MissionType.REALSENSE
-            # Drone subscribes to Camera pose
+
+        if CURRENT_MISSION in (MissionType.REALSENSE, MissionType.REALSENSE_WITH_FALLBACK):
+            # Realsense received
             qos_camera_pose = QoSProfile(depth=QOS_DEPTH)
             qos_camera_pose.reliability = ReliabilityPolicy.BEST_EFFORT
             self.sub_camera_pose = self.create_subscription(
-                Odometry, 
-                REALSENSE_TOPIC_NAME, 
-                self.callback_camera_pose, 
-                qos_camera_pose
+                Odometry, REALSENSE_TOPIC_NAME, self.callback_camera_pose, qos_camera_pose
             )
             
-        ### MISSION
-        # Drone receives waypoints
-        qos_waypoints = QoSProfile(depth=QOS_DEPTH)
-        qos_waypoints.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.sub_waypoints = self.create_subscription(
-            PoseArray, 
-            WAYPOINTS_TOPIC_NAME, 
-            self.callback_waypoints, 
-            qos_waypoints
+        ### Target pose subscription (always active)
+        qos_target_pose = QoSProfile(depth=QOS_DEPTH)
+        qos_target_pose.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.sub_target_pose = self.create_subscription(
+            PoseStamped, TARGET_POSE_TOPIC_NAME, self.callback_target_pose, qos_target_pose
         )
-        
-        ### MAVROS
-        # Drone subscribes to MAVROS state
-        qos_mavros_state = QoSProfile(depth=QOS_DEPTH)
+
+        ### MAVROS subscriptions / publishers
         self.sub_mavros_state = self.create_subscription(
-            State, MAVROS_STATE_TOPIC_NAME, self.callback_mavros_state, qos_mavros_state
+            State, MAVROS_STATE_TOPIC_NAME, self.callback_mavros_state,
+            QoSProfile(depth=QOS_DEPTH)
         )
-        # Drone publishes target setpoint over MAVROS to flight controller
-        qos_mavros_setpoint = QoSProfile(depth=QOS_DEPTH)
         self.pub_mavros_setpoint = self.create_publisher(
-            PoseStamped, MAVROS_SETPOINT_TOPIC_NAME, qos_mavros_setpoint
+            PoseStamped, MAVROS_SETPOINT_TOPIC_NAME, QoSProfile(depth=QOS_DEPTH)
         )
-        # Drone publishes Vision pose to vision EKF source for Cube
-        qos_mavros_vision_pose = QoSProfile(depth=QOS_DEPTH)
         self.pub_mavros_vision_pose = self.create_publisher(
-            PoseStamped, MAVROS_VISION_POSE_TOPIC_NAME, qos_mavros_vision_pose
+            PoseStamped, MAVROS_VISION_POSE_TOPIC_NAME, QoSProfile(depth=QOS_DEPTH)
         )
-        
-        ### MAVROS Clients
-        # Generate callbacks to communicate over MAVROS
-        self.cli_set_mode = self.create_client(
-            SetMode, '/mavros/set_mode'
-        )
-        self.cli_arming = self.create_client(
-            CommandBool, '/mavros/cmd/arming'
-        )
-        self.cli_land = self.create_client(
-            CommandTOL, '/mavros/cmd/land'
-        )
-        # Wait for services to enable
+
+        ### MAVROS clients
+        self.cli_set_mode = self.create_client(SetMode,     '/mavros/set_mode')
+        self.cli_arming   = self.create_client(CommandBool, '/mavros/cmd/arming')
+        self.cli_land     = self.create_client(CommandTOL,  '/mavros/cmd/land')
         self.cli_set_mode.wait_for_service()
         self.cli_arming.wait_for_service()
         self.cli_land.wait_for_service()
-        
-    '''
-    General utilities
-    '''
-    def update_pose_header(self, pose: PoseStamped):
-        pose.header.frame_id = 'map' # we send everything for MAVROS in 'map' frame
-        pose.header.stamp = self.get_clock().now().to_msg()
-        return pose
-        
-    def finished_waypoints(self):
-        return self.current_waypoint >= self.num_waypoints
-    
-    def get_current_target(self):
-        if self.finished_waypoints():
-            return self.vision_state.get_init_hover_pose() # hovering above init pose
-        else:
-            return self.waypoints[self.current_waypoint] # normal waypoint
-    
-    def at_waypoint(self):
-        return distance_poses(
-            self.get_current_target(), 
-            self.vision_state.current_vision_pose
-        ) <= SUCCESS_RADIUS
-            
-    def record_loitering_at_waypoint(self):
-        if self.time_waypoint_reached is None:
-            self.time_waypoint_reached = self.get_clock().now()
-    
-    def have_loitered_at_waypoint_long_enough(self):
-        current_time = self.get_clock().now()
-        time_elapsed_nanoseconds = (current_time - self.time_waypoint_reached).nanoseconds
-        return time_elapsed_nanoseconds >= LOITER_TIME_NANOSECONDS
 
-    def update_waypoint(self):
-        self.time_waypoint_reached = None # reset time
-        self.current_waypoint += 1 # proceed to next
-    
-    '''
-    Service and Subscription Callbacks
-    '''
-    def callback_launch(
-        self, 
-        request: Trigger.Request,
-        response: Trigger.Response
-    ) -> Trigger.Response:
+    # ==================================================================
+    # Callbacks (thin wrappers — logic lives in HandlersMixin)
+    # ==================================================================
+
+    def callback_launch(self, request, response):
         return self.handle_launch(request, response)
 
-    def callback_test(
-        self, 
-        request: Trigger.Request,
-        response: Trigger.Response
-    ) -> Trigger.Response:
+    def callback_test(self, request, response):
         return self.handle_test(request, response)
 
-    def callback_land(
-        self, 
-        request: Trigger.Request,
-        response: Trigger.Response
-    ) -> Trigger.Response:
+    def callback_land(self, request, response):
         return self.handle_land(request, response)
 
-    def callback_abort(
-        self, 
-        request: Trigger.Request,
-        response: Trigger.Response
-    ) -> Trigger.Response:
+    def callback_abort(self, request, response):
         return self.handle_abort(request, response)
-  
-    def callback_camera_pose(
-        self, 
-        msg: Odometry
-    ) -> None:
+
+    def callback_camera_pose(self, msg: Odometry):
         self.handle_camera_pose(msg)
-        
-    def callback_vicon_pose(
-        self, 
-        msg: PoseStamped
-    ) -> None:
+
+    def callback_vicon_pose(self, msg: PoseStamped):
         self.handle_vicon_pose(msg)
 
-    def callback_mavros_state(
-        self, 
-        msg: State
-    ) -> None:
-        self.handle_mavros_state(msg)      
-    
-    def callback_waypoints(
-        self,
-        msg: PoseArray
-    ) -> None:
-        self.handle_waypoints(msg)
-    
-    '''
-    Publish utilities
-    '''
-    def publish_setpoint(
-        self, pose: PoseStamped = None
-    ):
-        # Initialize pose to publish
+    def callback_target_pose(self, msg: PoseStamped):
+        self.handle_target_pose(msg)
+
+    def callback_mavros_state(self, msg: State):
+        self.handle_mavros_state(msg)
+
+    # ==================================================================
+    # General utilities
+    # ==================================================================
+
+    def update_pose_header(self, pose: PoseStamped) -> PoseStamped:
+        pose.header.frame_id = 'map'
+        pose.header.stamp    = self.get_clock().now().to_msg()
+        return pose
+
+    def at_pose(self, target: PoseStamped) -> bool:
+        return distance_poses(target, self.vision_state.current_vision_pose) <= SUCCESS_RADIUS
+
+    # ------------------------------------------------------------------
+    # Continuous output for drone's navigational target
+    # ------------------------------------------------------------------
+
+    def get_current_setpoint(self) -> PoseStamped:
+        """
+        Determine the drone's current current target based on current state
+        """
+        state = self.mission_state
+
+        if state in (MissionState.INITIALIZING,
+                     MissionState.AWAITING_LAUNCH,
+                     MissionState.AWAITING_TEST):
+            # Hold at init hover while waiting
+            return self.vision_state.get_init_hover_pose()
+
+        elif state == MissionState.SURVEYING:
+            setpoint = self.survey_state.get_survey_setpoint()
+            # Fallback: if survey hasn't started yet, hold init hover
+            return setpoint if setpoint is not None else self.vision_state.get_init_hover_pose()
+
+        elif state == MissionState.TRACKING_TARGET:
+            target = self.target_state.get_pose()
+            if target is not None:
+                return compute_tracking_pose(
+                    self.vision_state.current_vision_pose,
+                    target,
+                    TARGET_STANDOFF_RADIUS,
+                    TARGET_HOVER_ABOVE,
+                )
+            # Target lost mid-state (shouldn't happen — FSM guards this)
+            return self.vision_state.get_init_hover_pose()
+
+        elif state == MissionState.GOING_HOME:
+            return self.vision_state.get_init_hover_pose()
+
+        elif state in (MissionState.LANDING, MissionState.MANUAL_OVERRIDE):
+            # Keep last known setpoint — MAVROS land command takes over for LANDING
+            return self.vision_state.get_init_hover_pose()
+
+        # Should never reach here
+        return self.vision_state.get_init_hover_pose()
+
+    # ==================================================================
+    # Publish utilities
+    # ==================================================================
+
+    def publish_setpoint(self, pose: PoseStamped):
         setpoint_pose = PoseStamped()
-        
-        # Copy over pose data, immutable elements only
-        # If no pose is provided, a default home pose is published
-        setpoint_pose.pose.position.x    = 0 if pose is None else pose.pose.position.x
-        setpoint_pose.pose.position.y    = 0 if pose is None else pose.pose.position.y
-        setpoint_pose.pose.position.z    = 0 if pose is None else pose.pose.position.z
-        setpoint_pose.pose.orientation.x = 0 if pose is None else pose.pose.orientation.x
-        setpoint_pose.pose.orientation.y = 0 if pose is None else pose.pose.orientation.y
-        setpoint_pose.pose.orientation.z = 0 if pose is None else pose.pose.orientation.z
-        setpoint_pose.pose.orientation.w = 1 if pose is None else pose.pose.orientation.w
-        
-        # Update header -> okay to mutate setpoint pose
+        setpoint_pose.pose.position.x    = pose.pose.position.x
+        setpoint_pose.pose.position.y    = pose.pose.position.y
+        setpoint_pose.pose.position.z    = pose.pose.position.z
+        setpoint_pose.pose.orientation.x = pose.pose.orientation.x
+        setpoint_pose.pose.orientation.y = pose.pose.orientation.y
+        setpoint_pose.pose.orientation.z = pose.pose.orientation.z
+        setpoint_pose.pose.orientation.w = pose.pose.orientation.w
         setpoint_pose = self.update_pose_header(setpoint_pose)
-        
-        # Publish
         self.pub_mavros_setpoint.publish(setpoint_pose)
-        
-    def publish_vision_pose(
-        self
-    ):
-        # Initialize pose to publish
+
+    def publish_vision_pose(self):
         redirected_pose = PoseStamped()
-        
-        # Copy over pose data, prevents mutation
-        redirected_pose.pose = self.vision_state.current_vision_pose.pose
+        redirected_pose.pose   = self.vision_state.current_vision_pose.pose
         redirected_pose.header = self.vision_state.current_vision_pose.header
-        
-        # Update header -> okay to mutate redicted pose
         redirected_pose = self.update_pose_header(redirected_pose)
-        
-        # Publish
         self.pub_mavros_vision_pose.publish(redirected_pose)
-    
-    '''
-    Client request commands
-    '''
+
+    # ==================================================================
+    # MAVROS client requests
+    # ==================================================================
+
     def request_offboard_mode(self):
         self.get_logger().info('Requesting offboard')
         req = SetMode.Request()
         req.custom_mode = OFFBOARD_MODE
-        self.cli_set_mode.call_async(req) # Ok not to check await response
-        self.get_logger().info('Requested offboard')
-    
+        self.cli_set_mode.call_async(req)
+
     def request_altitude_mode(self):
-        self.get_logger().info('Requesting altitude')
+        self.get_logger().info('Requesting altitude mode')
         req = SetMode.Request()
         req.custom_mode = ALTITUDE_MODE
-        self.cli_set_mode.call_async(req) # Ok not to check await response
-        self.get_logger().info('Requested altitude')
-    
+        self.cli_set_mode.call_async(req)
+
     def request_arm(self):
         self.get_logger().info('Requesting arm')
         req = CommandBool.Request()
         req.value = True
-        self.cli_arming.call_async(req) # Ok not to check await response
-        self.get_logger().info('Requested arm')
-    
+        self.cli_arming.call_async(req)
+
     def request_land(self):
         self.get_logger().info('Requesting land')
         req = CommandTOL.Request()
-        self.cli_land.call_async(req) # Ok not to check await response
-        self.get_logger().info('Requested land')
-    
+        self.cli_land.call_async(req)
+
+    # ==================================================================
+    # Finite State Machine
+    # ==================================================================
     '''
-    State transition logic
-    
-    INITIALIZING            ==> Computing init pose
-    AWAITING_LAUNCH         ==> Waiting for /launch
-    AWAITING_TEST           ==> Waiting for /test
-    EN_ROUTE_TO_WAYPOINT    ==> Moving to next waypoint
-    LOITERING_AT_WAYPOINT   ==> Reached waypoint
-    UPDATING_WAYPOINT       ==> No processing should occur in state transition, rather exec loop
-    LANDING                 ==> Landing in place
-    MANUAL_OVERRIDE         ==> Under manual control
+    State machine overview
+    ----------------------
+    INITIALIZING        -> AWAITING_LAUNCH      (init pose computed)
+    AWAITING_LAUNCH     -> AWAITING_TEST         (/launch received)
+    AWAITING_TEST       -> SURVEYING             (/test received)
+    SURVEYING           -> TRACKING_TARGET       (valid target seen)
+    TRACKING_TARGET     -> SURVEYING             (target lost/stale)
+    TRACKING_TARGET     -> GOING_HOME            (/land received)
+    SURVEYING           -> GOING_HOME            (/land received)
+    GOING_HOME          -> LANDING               (at home hover pose)
+    * -> LANDING                                 (/abort at any time)
+    * -> MANUAL_OVERRIDE                         (RC takeover detected)
     '''
+
     def update_state(self):
-        '''
-        Only ONE state transiiton EVER occurs per-loop with FSMs
-        This makes sure all state actions can be executed at least once.
-        Transitioning between multiple states per loop is DANGEROUS.
-        '''
-        
+        """
+        Advance the FSM by at most ONE transition per tick.
+        All guard conditions are evaluated here; side-effects happen in execute_state().
+        """
         initial_state = self.mission_state
-        
-        ### Universal Commands
-        # These will take control of the drone no matter what the current state
-        if self.land_requested:
+        now_ns = self.get_clock().now().nanoseconds
+
+        # ---- Universal overrides (highest priority) -------------------
+        if self.abort_requested:
             self.mission_state = MissionState.LANDING
-        elif self.abort_requested:
-            self.mission_state = MissionState.LANDING
+
         elif self.emergency_stop_requested:
             self.mission_state = MissionState.LANDING
+
+        elif self.land_requested:
+            # Graceful land: go home first (unless already landing/going home)
+            if self.mission_state not in (MissionState.GOING_HOME,
+                                          MissionState.LANDING):
+                self.mission_state = MissionState.GOING_HOME
+
         elif self.manual_override_requested:
             self.mission_state = MissionState.MANUAL_OVERRIDE
+
         else:
-            ### Ordinary commands
-            # INITIALIZING
+            # ---- Ordinary transitions ---------------------------------
+
             if self.mission_state == MissionState.INITIALIZING:
-                # -> AWAITING_LAUNCH
                 if self.vision_state.is_init_pose_computed():
                     self.mission_state = MissionState.AWAITING_LAUNCH
-            
-            # AWAITING_LAUNCH
+
             elif self.mission_state == MissionState.AWAITING_LAUNCH:
-                # -> AWAITING_TEST
                 if self.launch_requested:
                     self.mission_state = MissionState.AWAITING_TEST
-            
-            # AWAITING_TEST
-            elif self.mission_state == MissionState.AWAITING_TEST:
-                # -> EN_ROUTE_TO_WAYPOINT
-                if self.test_requested:
-                    self.mission_state = MissionState.EN_ROUTE_TO_WAYPOINT
-            
-            # EN_ROUTE_TO_WAYPOINT
-            elif self.mission_state == MissionState.EN_ROUTE_TO_WAYPOINT:
-                if self.at_waypoint():
-                    # -> LANDING
-                    if self.finished_waypoints():
-                        self.mission_state = MissionState.LANDING
-                        
-                    # -> LOITERING_AT_WAYPOINT
-                    else:
-                        self.mission_state = MissionState.LOITERING_AT_WAYPOINT
-            
-            # LOITERING_AT_WAYPOINT
-            elif self.mission_state == MissionState.LOITERING_AT_WAYPOINT:
-                # -> UPDATING_WAYPOINT
-                if self.have_loitered_at_waypoint_long_enough():
-                    self.mission_state = MissionState.UPDATING_WAYPOINT
 
-            # UPDATING_WAYPOINT
-            elif self.mission_state == MissionState.UPDATING_WAYPOINT:
-                # Always proceed, the one loop is enough for processing
-                self.mission_state = MissionState.EN_ROUTE_TO_WAYPOINT
-                
-        # Report if state changed
-        final_state = self.mission_state
-        if initial_state != final_state:
-            self.get_logger().info(f'Transition! {initial_state} -> {final_state}')
-    
+            elif self.mission_state == MissionState.AWAITING_TEST:
+                if self.test_requested:
+                    self.mission_state = MissionState.SURVEYING
+
+            elif self.mission_state == MissionState.SURVEYING:
+                # When a valid target is recieved, track it
+                if self.target_state.has_valid_target(now_ns):
+                    self.mission_state = MissionState.TRACKING_TARGET
+
+            elif self.mission_state == MissionState.TRACKING_TARGET:
+                # Return to survey if target is lost or stale
+                if not self.target_state.has_valid_target(now_ns):
+                    self.mission_state = MissionState.SURVEYING
+
+            elif self.mission_state == MissionState.GOING_HOME:
+                # Land once we are close enough to the home hover pose
+                if self.at_pose(self.vision_state.get_init_hover_pose()):
+                    self.mission_state = MissionState.LANDING
+
+        # Log any transition
+        if initial_state != self.mission_state:
+            self.get_logger().info(
+                f'Transition! {initial_state.value} -> {self.mission_state.value}'
+            )
+
+    # ==================================================================
+    # FSM — state execution
+    # ==================================================================
+
     def execute_state(self):
-        ### LANDING
-        if self.mission_state in [
-            MissionState.LANDING
-        ]:
-            self.request_land()
+        """
+        Perform required state activities each step.
+        """
         
-        ### CLEAR FLAGS
-        # We only really are about launch and test flags
-        # Land, Abort, Emergency Stop, Manual Override can all persist since they end flight
+        now_ns = self.get_clock().now().nanoseconds
+
+        if self.mission_state == MissionState.LANDING:
+            self.request_land()
+
+        # Manage survey rotation
+        if self.mission_state == MissionState.SURVEYING:
+            if self.survey_state.get_survey_setpoint() is None:
+                # First tick in survey: record starting pose and time
+                self.survey_state.begin(
+                    self.vision_state.current_vision_pose, now_ns
+                )
+            else:
+                self.survey_state.update(now_ns)
+        else:
+            # Reset survey when leaving the state so it starts fresh next time
+            self.survey_state.reset()
+
+        # ---- Clear one-time command flags  ------------------------------------
+        # Land / abort / emergency flags will persist to ensure drone lands
         if self.mission_state != MissionState.AWAITING_LAUNCH:
             self.launch_requested = False
         if self.mission_state != MissionState.AWAITING_TEST:
             self.test_requested = False
-        
-        ### PUBLISHING
-        # Publish setpoint
-        if self.mission_state in [
-            MissionState.AWAITING_LAUNCH, 
-            MissionState.AWAITING_TEST
-        ]:
-            self.publish_setpoint(self.vision_state.get_init_hover_pose())
-        elif self.mission_state in [
-            MissionState.EN_ROUTE_TO_WAYPOINT,
-            MissionState.LOITERING_AT_WAYPOINT,
-            MissionState.UPDATING_WAYPOINT,
-            MissionState.LANDING,
-            MissionState.MANUAL_OVERRIDE
-        ]:
-            self.publish_setpoint(self.get_current_target())
-            
-        # Redirect vision pose
+
+        # ---- Publish setpoint-------------------------------------
+        current_setpoint = self.get_current_setpoint()
+        self.publish_setpoint(current_setpoint)
+
+        # ---- Publish vision pose (after init) ------------------------
         if self.mission_state != MissionState.INITIALIZING:
             self.publish_vision_pose()
-        
-            # Monitor for emergency stop
-            # Need valid init pose for this
-            self.emergency_stop_requested = self.emergency_stop_requested or \
+
+            # Emergency stop check (requires valid init pose)
+            self.emergency_stop_requested = self.emergency_stop_requested or (
                 distance_poses(
-                    self.vision_state.current_vision_pose, self.vision_state.init_vision_pose
+                    self.vision_state.current_vision_pose,
+                    self.vision_state.init_vision_pose
                 ) >= MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT
-            
-        ### MAVROS STATE CHECKS
+            )
+
+        # ---- MAVROS arming / mode management -------------------------
         _is_connected = self.current_mavros_state.connected
-        _is_armed = self.current_mavros_state.armed
-        _is_offboard = self.current_mavros_state.mode == OFFBOARD_MODE
+        _is_armed     = self.current_mavros_state.armed
+        _is_offboard  = self.current_mavros_state.mode == OFFBOARD_MODE
+
         if not _is_connected:
-            return # Not connected
-            
-        ### GET TO OFFBOARD
-        if self.mission_state not in [
-            MissionState.INITIALIZING,
-            MissionState.AWAITING_LAUNCH,
-            MissionState.LANDING,
-            MissionState.MANUAL_OVERRIDE
-        ]:
-            # Arm
-            if not _is_armed:                
-                # Set to Altitude (Manual) mode before arming
+            return
+
+        # States where we actively want to be in OFFBOARD and armed
+        active_flight_states = (
+            MissionState.AWAITING_TEST,
+            MissionState.SURVEYING,
+            MissionState.TRACKING_TARGET,
+            MissionState.GOING_HOME,
+        )
+
+        if self.mission_state in active_flight_states:
+            if not _is_armed:
                 if _is_offboard:
                     self.request_altitude_mode()
                 else:
                     self.request_arm()
-            # Get to offboard
             else:
                 if not _is_offboard:
-                    # Monitor for manual override
-                    self.manual_override_requested = \
+                    self.manual_override_requested = (
                         self.has_got_to_offboard and PERMIT_MANUAL_OVERRIDE
-                    # Try for offboard if not manually overriden
+                    )
                     if not self.manual_override_requested:
-                        # OK if we get rejected due to setpoints not published
-                        # Keep trying until we get it
                         self.request_offboard_mode()
-                        
                 else:
-                    # Record we have entered offboard
                     self.has_got_to_offboard = True
         else:
-            # Record we have exited offboard
             self.has_got_to_offboard = False
-        
-        ### WAYPOINT MANAGEMENT
-        if self.mission_state == MissionState.LOITERING_AT_WAYPOINT:
-            self.record_loitering_at_waypoint()
-        
-        if self.mission_state == MissionState.UPDATING_WAYPOINT:
-            self.update_waypoint()
-                
-    '''
-    Drone continuous control logic, running at COMMAND_RATE
-    '''
+
+    # ==================================================================
+    # Main control loop (runs at COMMAND_RATE Hz)
+    # ==================================================================
+
     def control_loop(self):
-        # Manage state transitions
         self.update_state()
-        
-        # Actuate drone based on state
         self.execute_state()
