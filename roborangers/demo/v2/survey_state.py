@@ -14,14 +14,18 @@ class SurveyState:
 
     Usage
     -----
-    Call `begin(current_pose)` when entering SURVEYING state.
-    Call `update(current_time_ns)` each control loop tick to advance the step
-    when the hold time has elapsed.
-    Read `get_survey_setpoint()` to get the PoseStamped the drone should target.
+    Call `begin(current_pose, current_time_ns)` on the first tick of SURVEYING.
+    Call `update(current_time_ns)` each subsequent tick to advance the step.
+    Read `get_survey_setpoint(current_vision_pose)` for the commanded pose.
+
+    `get_survey_setpoint` always returns a valid PoseStamped:
+    - Before `begin()` is called, it returns the drone's current vision pose
+      so the drone holds exactly where it is.
+    - After `begin()`, it returns the rotating hover setpoint as normal.
     """
 
     def __init__(self):
-        self._hover_pose: PoseStamped | None = None   # Position to hold (x, y, z fixed)
+        self._hover_pose: PoseStamped | None = None   # Position anchor (x, y, z fixed)
         self._current_yaw: float = 0.0                # Current target yaw (radians)
         self._step_start_time_ns: int | None = None   # When the current step began
 
@@ -67,11 +71,14 @@ class SurveyState:
     # Setpoint query
     # ------------------------------------------------------------------
 
-    def get_survey_setpoint(self) -> PoseStamped | None:
+    def get_survey_setpoint(self, current_vision_pose: PoseStamped) -> PoseStamped:
         """
         Return the PoseStamped the drone should be commanded to.
-        Returns None if begin() has not been called yet.
+
+        If begin() has not yet been called (i.e. the very first tick after
+        entering SURVEYING), returns `current_vision_pose` so the drone
+        holds its current position rather than rubber-banding anywhere.
         """
         if self._hover_pose is None:
-            return None
+            return current_vision_pose
         return pose_with_yaw(self._hover_pose, self._current_yaw)

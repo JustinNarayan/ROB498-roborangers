@@ -151,6 +151,67 @@ def wrap_angle(angle: float) -> float:
     """
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
+def orientation_divergence_angle(pose_a: PoseStamped, pose_b: PoseStamped) -> float:
+    """
+    Compute the geodesic angular distance (radians) between the orientations
+    of two poses.
+
+    Method: the angle θ between two unit quaternions q_a and q_b satisfies
+        cos(θ/2) = |q_a · q_b|
+    so θ = 2 * arccos(|q_a · q_b|).
+
+    The absolute value handles the quaternion double-cover property (q and -q
+    represent the same rotation), ensuring the result is always in [0, π].
+    Clipping the dot product to [-1, 1] guards against floating-point noise
+    that would cause arccos to return NaN.
+    """
+    q_a = np.array([
+        pose_a.pose.orientation.x,
+        pose_a.pose.orientation.y,
+        pose_a.pose.orientation.z,
+        pose_a.pose.orientation.w,
+    ])
+    q_b = np.array([
+        pose_b.pose.orientation.x,
+        pose_b.pose.orientation.y,
+        pose_b.pose.orientation.z,
+        pose_b.pose.orientation.w,
+    ])
+    dot = float(np.clip(np.abs(np.dot(q_a, q_b)), 0.0, 1.0))
+    return 2.0 * np.arccos(dot)
+
+def per_axis_position_divergence(pose_a: PoseStamped, pose_b: PoseStamped):
+    """
+    Return the signed per-axis position difference (a - b) as a tuple (dx, dy, dz).
+    Used for debug publishing.
+    """
+    dx = pose_a.pose.position.x - pose_b.pose.position.x
+    dy = pose_a.pose.position.y - pose_b.pose.position.y
+    dz = pose_a.pose.position.z - pose_b.pose.position.z
+    return dx, dy, dz
+
+def per_axis_orientation_divergence(pose_a: PoseStamped, pose_b: PoseStamped):
+    """
+    Return the signed per-axis Euler angle difference (a - b) as a tuple
+    (d_roll, d_pitch, d_yaw) in radians.  Used for debug publishing.
+    """
+    euler_a = euler_from_quaternion([
+        pose_a.pose.orientation.x,
+        pose_a.pose.orientation.y,
+        pose_a.pose.orientation.z,
+        pose_a.pose.orientation.w,
+    ])
+    euler_b = euler_from_quaternion([
+        pose_b.pose.orientation.x,
+        pose_b.pose.orientation.y,
+        pose_b.pose.orientation.z,
+        pose_b.pose.orientation.w,
+    ])
+    d_roll  = wrap_angle(euler_a[0] - euler_b[0])
+    d_pitch = wrap_angle(euler_a[1] - euler_b[1])
+    d_yaw   = wrap_angle(euler_a[2] - euler_b[2])
+    return d_roll, d_pitch, d_yaw
+
 ###############################################
 #       T A R G E T   T R A C K I N G         #
 ###############################################
@@ -201,9 +262,6 @@ def compute_tracking_pose(
 
     dist_xy = np.sqrt(dx**2 + dy**2)
 
-    # Compute the angle along the x-y plane:
-    # FROM the TARGET
-    # TO the DRONE
     if dist_xy < 1e-6:
         # Drone is directly above the target — pick an arbitrary direction
         angle_to_drone = 0.0
@@ -211,7 +269,6 @@ def compute_tracking_pose(
         angle_to_drone = np.arctan2(dy, dx)
 
     # Closest point on the standoff circle
-    # Start from the TARGET position and go OUTWARD toward the DRONE
     setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
     setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)
     setpoint_z = tz + hover_above

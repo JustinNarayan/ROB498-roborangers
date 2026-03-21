@@ -22,14 +22,23 @@ HOVER_ALTITUDE = 0.5 # m
 #              D E B U G G I N G              #
 ###############################################
 
-DEBUG_ALL_WAYPOINTS = True
+DEBUG_ALL_WAYPOINTS = True  # log each waypoint received (legacy, harmless to keep)
 
 ###############################################
 #    V I S I O N   F A L L B A C K            #
 ###############################################
 
 # Max allowed positional distance (m) between Realsense and Vicon before faulting to Vicon
-REALSENSE_VICON_DIVERGENCE_THRESHOLD = 0.3 # m
+REALSENSE_VICON_POSITION_DIVERGENCE_THRESHOLD    = 0.3   # m
+
+# Max allowed angular distance (rad) between Realsense and Vicon before faulting to Vicon
+# Computed as: 2 * arccos(|q_a · q_b|), giving the geodesic angle between two orientations
+REALSENSE_VICON_ORIENTATION_DIVERGENCE_THRESHOLD = 0.174 # rad (~10 degrees)
+
+# If True, continuously publish per-axis position and orientation divergence between
+# Realsense and Vicon to debug topics. Publishes zeros on any axis when only one
+# source is being received.
+DEBUG_VISION_DIVERGENCE = True
 
 ###############################################
 #         S U R V E Y   S T A T E             #
@@ -68,6 +77,9 @@ LAND_SERVICE_NAME   = f'{DRONE_ID}/comm/land'
 LAUNCH_SERVICE_NAME = f'{DRONE_ID}/comm/launch'
 ABORT_SERVICE_NAME  = f'{DRONE_ID}/comm/abort'
 TEST_SERVICE_NAME   = f'{DRONE_ID}/comm/test'
+
+DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME    = f'{DRONE_ID}/debug/vision_divergence/position'
+DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME = f'{DRONE_ID}/debug/vision_divergence/orientation'
 
 MAVROS_STATE_TOPIC_NAME         = '/mavros/state'
 MAVROS_SETPOINT_TOPIC_NAME      = '/mavros/setpoint_position/local'

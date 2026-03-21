@@ -99,8 +99,7 @@ class HandlersMixin:
     # ------------------------------------------------------------------
 
     def handle_target_pose(self, msg: PoseStamped) -> None:
-        current_time_ns = self.get_clock().now().nanoseconds
-        self.target_state.update(msg, current_time_ns)
+        self.target_state.update(msg)
 
     # ------------------------------------------------------------------
     # MAVROS state handler

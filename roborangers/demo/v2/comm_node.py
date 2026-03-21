@@ -8,6 +8,7 @@ from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
+from std_msgs.msg import Float32MultiArray
 
 # Quality of Service
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -26,6 +27,9 @@ from constants import (
     MAVROS_STATE_TOPIC_NAME, MAVROS_SETPOINT_TOPIC_NAME, MAVROS_VISION_POSE_TOPIC_NAME,
     QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE,
     TARGET_STANDOFF_RADIUS, TARGET_HOVER_ABOVE,
+    DEBUG_VISION_DIVERGENCE,
+    DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME,
+    DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME,
 )
 from vision_state import VisionState
 from target_state import TargetState
@@ -40,10 +44,31 @@ class CommNode(HandlersMixin, Node):
     def __init__(self):
         super().__init__(DRONE_ID)
 
+        ### Create initial debug publishers for VisionState
+        # Publish divergence between Vicon and Realsense
+        if DEBUG_VISION_DIVERGENCE:
+            self._debug_pos_pub = self.create_publisher(
+                Float32MultiArray,
+                DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME,
+                QoSProfile(depth=QOS_DEPTH)
+            )
+            self._debug_ori_pub = self.create_publisher(
+                Float32MultiArray,
+                DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME,
+                QoSProfile(depth=QOS_DEPTH)
+            )
+        else:
+            self._debug_pos_pub = None
+            self._debug_ori_pub = None
+
         ### Sub-states
-        self.vision_state   = VisionState(logger=self.get_logger()) # For divergence errors
-        self.target_state   = TargetState()
-        self.survey_state   = SurveyState()
+        self.vision_state = VisionState(
+            logger=self.get_logger(),
+            debug_pos_publisher=self._debug_pos_pub,
+            debug_ori_publisher=self._debug_ori_pub,
+        )
+        self.target_state = TargetState()
+        self.survey_state = SurveyState()
 
         ### Mission flags
         self.mission_state          = MissionState.INITIALIZING
@@ -168,9 +193,11 @@ class CommNode(HandlersMixin, Node):
             return self.vision_state.get_init_hover_pose()
 
         elif state == MissionState.SURVEYING:
-            setpoint = self.survey_state.get_survey_setpoint()
-            # Fallback: if survey hasn't started yet, hold init hover
-            return setpoint if setpoint is not None else self.vision_state.get_init_hover_pose()
+            # Always valid: returns current_vision_pose before begin() fires,
+            # then the rotating hover setpoint thereafter
+            return self.survey_state.get_survey_setpoint(
+                self.vision_state.current_vision_pose
+            )
 
         elif state == MissionState.TRACKING_TARGET:
             target = self.target_state.get_pose()
@@ -181,17 +208,14 @@ class CommNode(HandlersMixin, Node):
                     TARGET_STANDOFF_RADIUS,
                     TARGET_HOVER_ABOVE,
                 )
-            # Target lost mid-state (shouldn't happen — FSM guards this)
-            return self.vision_state.get_init_hover_pose()
 
         elif state == MissionState.GOING_HOME:
             return self.vision_state.get_init_hover_pose()
 
         elif state in (MissionState.LANDING, MissionState.MANUAL_OVERRIDE):
-            # Keep last known setpoint — MAVROS land command takes over for LANDING
             return self.vision_state.get_init_hover_pose()
 
-        # Should never reach here
+        # Should never reach here, but return to hover pose in worst case
         return self.vision_state.get_init_hover_pose()
 
     # ==================================================================
@@ -268,7 +292,6 @@ class CommNode(HandlersMixin, Node):
         All guard conditions are evaluated here; side-effects happen in execute_state().
         """
         initial_state = self.mission_state
-        now_ns = self.get_clock().now().nanoseconds
 
         # ---- Universal overrides (highest priority) -------------------
         if self.abort_requested:
@@ -303,12 +326,12 @@ class CommNode(HandlersMixin, Node):
 
             elif self.mission_state == MissionState.SURVEYING:
                 # When a valid target is recieved, track it
-                if self.target_state.has_valid_target(now_ns):
+                if self.target_state.has_valid_target():
                     self.mission_state = MissionState.TRACKING_TARGET
 
             elif self.mission_state == MissionState.TRACKING_TARGET:
                 # Return to survey if target is lost or stale
-                if not self.target_state.has_valid_target(now_ns):
+                if not self.target_state.has_valid_target():
                     self.mission_state = MissionState.SURVEYING
 
             elif self.mission_state == MissionState.GOING_HOME:
@@ -338,8 +361,8 @@ class CommNode(HandlersMixin, Node):
 
         # Manage survey rotation
         if self.mission_state == MissionState.SURVEYING:
-            if self.survey_state.get_survey_setpoint() is None:
-                # First tick in survey: record starting pose and time
+            if self.survey_state._hover_pose is None:
+                # First tick in SURVEYING — lock in the starting pose and time
                 self.survey_state.begin(
                     self.vision_state.current_vision_pose, now_ns
                 )
