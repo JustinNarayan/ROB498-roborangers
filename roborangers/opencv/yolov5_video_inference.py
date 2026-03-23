@@ -1,74 +1,86 @@
 #!/usr/bin/env python3
-"""YOLOv5 inference on a local video with bbox + centroid overlay.
+"""YOLOv5 real-time inference visualizer — optimised for Jetson Nano.
 
-Jetson Nano-friendly: frame skipping, reduced input size, headless-safe display,
-and graceful teardown to avoid GPU freeze.
+Designed to simulate real-time drone footage inference with minimal memory
+footprint. No video saving — display only.
+
+Jetson Nano tips:
+  - Use yolov5n.pt (nano model, ~4 MB) instead of yolov5su.pt (~28 MB)
+  - half=True halves GPU memory usage via FP16 (requires CUDA)
+  - Resize frames before inference to avoid internal allocation spikes
+  - Delete result objects immediately to release GPU memory each loop
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import time
 from pathlib import Path
-from typing import Optional
 
 import cv2
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run pretrained YOLOv5 on a video and draw bbox + centroid."
+        description="Real-time YOLOv5 visualizer optimised for Jetson Nano."
     )
     parser.add_argument(
         "--video",
         default="",
-        help="Path to input video. If omitted, first .mp4 in opencv/videos is used.",
+        help="Path to input video. If omitted, first .mp4 in ./videos/ is used.",
     )
     parser.add_argument(
         "--model",
-        default="yolov5su.pt",
-        help="Pretrained model name/path for Ultralytics YOLO (default: yolov5su.pt).",
+        default="yolov5n.pt",  # Nano model — use this on Jetson, not yolov5su
+        help="Ultralytics YOLO model name/path. Recommended: yolov5n.pt for Jetson Nano.",
     )
-    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold")
-    parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
+    parser.add_argument(
+        "--conf", type=float, default=0.25, help="Confidence threshold (default: 0.25)"
+    )
+    parser.add_argument(
+        "--iou", type=float, default=0.45, help="NMS IoU threshold (default: 0.45)"
+    )
     parser.add_argument(
         "--imgsz",
         type=int,
-        default=320,  # Reduced from 640 — critical for Jetson Nano
-        help="Inference image size (square). Use 320 or 416 on Jetson Nano.",
+        default=320,
+        help="Inference image size (default: 320). Lower = faster + less memory.",
     )
     parser.add_argument(
         "--car-class-id",
         type=int,
         default=2,
-        help="COCO class id for car (default: 2)",
+        help="COCO class id to track (default: 2 = car).",
     )
     parser.add_argument(
         "--all-classes",
         action="store_true",
-        help="Draw all detected classes instead of only class id in --car-class-id.",
-    )
-    parser.add_argument(
-        "--save",
-        default="",
-        help="Optional output video path with overlays.",
+        help="Show all detected classes instead of only --car-class-id.",
     )
     parser.add_argument(
         "--skip-frames",
         type=int,
         default=2,
-        help="Run inference every N frames (default: 2). Set higher on slow hardware.",
-    )
-    parser.add_argument(
-        "--no-display",
-        action="store_true",
-        help="Disable cv2.imshow (use when headless or over SSH).",
+        help="Run inference every N frames (default: 2). Raise to 3-4 if still slow.",
     )
     parser.add_argument(
         "--max-fps",
         type=float,
-        default=0.0,
-        help="Cap processing loop to this FPS (0 = uncapped). Helps prevent thermal throttle.",
+        default=15.0,
+        help="Cap the display loop to this FPS (default: 15). Prevents thermal throttle.",
+    )
+    parser.add_argument(
+        "--half",
+        action="store_true",
+        default=True,
+        help="Use FP16 half-precision inference (requires CUDA). Halves GPU memory.",
+    )
+    parser.add_argument(
+        "--no-half",
+        dest="half",
+        action="store_false",
+        help="Disable FP16 (use if you see inference errors on your CUDA build).",
     )
     return parser.parse_args()
 
@@ -88,7 +100,7 @@ def run() -> None:
         from ultralytics import YOLO
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "Missing dependency 'ultralytics'. Install it with: pip install ultralytics"
+            "ultralytics not installed. Run: pip install ultralytics"
         ) from exc
 
     script_path = Path(__file__).resolve()
@@ -97,34 +109,23 @@ def run() -> None:
         if args.video
         else resolve_default_video(script_path)
     )
-
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    # Load model once; keep off GPU until first predict call
+    print(f"Loading model: {args.model}  (half={args.half})")
     model = YOLO(args.model)
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
 
-    writer: Optional[cv2.VideoWriter] = None
-    if args.save:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(
-            str(Path(args.save).expanduser().resolve()),
-            fourcc,
-            fps,
-            (width, height),
-        )
-
     min_frame_time = 1.0 / args.max_fps if args.max_fps > 0 else 0.0
-    window_name = "YOLOv5 detection (press q to quit)"
+    infer_size = (args.imgsz, args.imgsz)
+    window_name = "YOLOv5 | q to quit"
     frame_idx = 0
-    last_result_boxes: list = []  # Reuse last detections on skipped frames
+    cached_boxes: list = []  # Detections reused across skipped frames
+
+    print("Starting display loop. Press 'q' to quit.")
 
     try:
         while True:
@@ -134,36 +135,52 @@ def run() -> None:
             if not ok:
                 break
 
-            # --- Frame skipping: only run inference every N frames ---
             run_inference = (frame_idx % max(1, args.skip_frames) == 0)
             frame_idx += 1
 
             if run_inference:
+                # Pre-resize before inference — avoids a large internal allocation
+                small = cv2.resize(frame, infer_size)
+
                 result = model.predict(
-                    source=frame,
+                    source=small,
                     conf=args.conf,
                     iou=args.iou,
                     imgsz=args.imgsz,
+                    half=args.half,
                     verbose=False,
                 )[0]
 
-                last_result_boxes = []
+                # Scale factors back to original frame resolution
+                fh, fw = frame.shape[:2]
+                sx = fw / args.imgsz
+                sy = fh / args.imgsz
+
+                cached_boxes = []
                 if result.boxes is not None and len(result.boxes) > 0:
                     for box in result.boxes:
                         cls_id = int(box.cls.item())
                         if not args.all_classes and cls_id != args.car_class_id:
                             continue
                         x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                        conf_val = float(box.conf.item())
-                        label = result.names.get(cls_id, str(cls_id))
-                        last_result_boxes.append((x1, y1, x2, y2, conf_val, label))
+                        # Scale coords back to display resolution
+                        x1, x2 = int(x1 * sx), int(x2 * sx)
+                        y1, y2 = int(y1 * sy), int(y2 * sy)
+                        cached_boxes.append((
+                            x1, y1, x2, y2,
+                            float(box.conf.item()),
+                            result.names.get(cls_id, str(cls_id)),
+                        ))
 
-            # --- Draw cached boxes on every frame ---
-            for x1, y1, x2, y2, conf_val, label in last_result_boxes:
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
+                # Explicitly free result to release GPU-side tensors immediately
+                del result
+                gc.collect()
+
+            # Draw cached boxes on the full-resolution display frame
+            for x1, y1, x2, y2, conf_val, label in cached_boxes:
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 80), 2)
-                cv2.circle(frame, (cx, cy), 4, (0, 90, 255), -1)
+                cv2.circle(frame, (cx, cy), 5, (0, 90, 255), -1)
                 cv2.putText(
                     frame,
                     f"{label} {conf_val:.2f}",
@@ -175,31 +192,45 @@ def run() -> None:
                     cv2.LINE_AA,
                 )
 
-            if writer is not None:
-                writer.write(frame)
+            # FPS overlay — useful for tuning skip-frames / imgsz on the Nano
+            elapsed = time.monotonic() - loop_start
+            display_fps = 1.0 / elapsed if elapsed > 0 else 0
+            cv2.putText(
+                frame,
+                f"FPS: {display_fps:.1f}",
+                (10, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
-            # --- Display (skip entirely if headless) ---
-            if not args.no_display:
-                cv2.imshow(window_name, frame)
-                if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                    break
+            cv2.imshow(window_name, frame)
+            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                break
 
-            # --- FPS cap: sleep to avoid melting the Nano ---
+            # Sleep to respect max-fps cap and give thermals a break
             if min_frame_time > 0:
-                elapsed = time.monotonic() - loop_start
-                sleep_time = min_frame_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                sleep_needed = min_frame_time - (time.monotonic() - loop_start)
+                if sleep_needed > 0:
+                    time.sleep(sleep_needed)
 
     finally:
-        # Always release resources — avoids GPU/driver hang on Jetson
         cap.release()
-        if writer is not None:
-            writer.release()
         cv2.destroyAllWindows()
+        print("Done.")
 
 
 if __name__ == "__main__":
     run()
 
-# python detect_jetson.py --imgsz 320 --skip-frames 3 --max-fps 10 --no-display --save out.mp4
+# yolov5n.pt  →  ONNX  →  TensorRT .engine
+# (PyTorch)      (intermediate)   (compiled for YOUR specific GPU)
+ 
+# python detect_jetson.py --video my_drone_footage.mp4 --skip-frames 3 --max-fps 12
+
+# Export to tensorrt
+# Run this once on the Jetson
+# yolo export model=yolov5n.pt format=engine imgsz=320 half=True device=0  # one-time export
+# python detect_jetson.py --model yolov5n.engine --imgsz 320 --skip-frames 2 --max-fps 20
