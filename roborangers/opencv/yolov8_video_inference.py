@@ -139,6 +139,10 @@ def run() -> None:
     frame_idx = 0
     cached_detections = []
 
+    # FIX: track FPS only on inference frames for accurate measurement
+    inference_fps = 0.0
+    inference_start = time.monotonic()
+
     print("Starting display loop. Press 'q' to quit.")
 
     try:
@@ -153,6 +157,11 @@ def run() -> None:
             frame_idx += 1
 
             if run_inference:
+                # FIX: measure elapsed time between inference frames only
+                elapsed = time.monotonic() - inference_start
+                inference_fps = 1.0 / elapsed if elapsed > 0 else 0.0
+                inference_start = time.monotonic()
+
                 detections = detector.infer(frame)
                 cached_detections = filter_detections(
                     detections,
@@ -162,11 +171,10 @@ def run() -> None:
 
             rendered = draw_detections(frame, cached_detections, class_names=class_names)
 
-            elapsed = time.monotonic() - loop_start
-            display_fps = 1.0 / elapsed if elapsed > 0 else 0.0
+            # FIX: display inference FPS (not loop FPS) — accurate and meaningful
             cv2.putText(
                 rendered,
-                f"FPS: {display_fps:.1f}",
+                f"Inference FPS: {inference_fps:.1f}",
                 (10, 28),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,

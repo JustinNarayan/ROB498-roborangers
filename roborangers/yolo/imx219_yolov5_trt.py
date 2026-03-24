@@ -13,7 +13,7 @@ Example:
         --onnx=yolov8n.onnx \
         --saveEngine=yolov8n.engine \
         --fp16 \
-        --workspace=512
+        --workspace=1024
 """
 
 import argparse
@@ -123,8 +123,11 @@ class YoloV8TRTDetector:
             self.bindings = [0] * self.engine.num_bindings
             self._configure_bindings()
 
+            # Warm-up pass — takes 10-15s on first run on Jetson Nano, this is normal
+            print("Running warm-up inference (this takes ~15s on Jetson Nano, please wait)...")
             dummy = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
             self.infer(dummy)
+            print("Warm-up complete.")
         except Exception:
             self.close()
             raise
@@ -326,14 +329,27 @@ class YoloV8TRTDetector:
             self.cuda_context.pop()
 
     def close(self) -> None:
+        # FIX: push context before freeing GPU memory to prevent shutdown freeze
+        if self.cuda_context is not None:
+            try:
+                self.cuda_context.push()
+            except Exception:
+                pass
+
         if hasattr(self, "device_inputs"):
             for device_mem in self.device_inputs.values():
-                device_mem.free()
+                try:
+                    device_mem.free()
+                except Exception:
+                    pass
             self.device_inputs = {}
 
         if hasattr(self, "device_outputs"):
             for device_mem in self.device_outputs.values():
-                device_mem.free()
+                try:
+                    device_mem.free()
+                except Exception:
+                    pass
             self.device_outputs = {}
 
         self.host_inputs = {}
@@ -344,7 +360,11 @@ class YoloV8TRTDetector:
         self.engine = None
 
         if self.cuda_context is not None:
-            self.cuda_context.detach()
+            try:
+                self.cuda_context.pop()   # pop before detach
+                self.cuda_context.detach()
+            except Exception:
+                pass
             self.cuda_context = None
 
     def __del__(self) -> None:
