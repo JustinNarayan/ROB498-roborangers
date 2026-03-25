@@ -74,7 +74,7 @@ For a Kalibr omni model, add `--fisheye-kalibr-model omni --fisheye-xi <value>`.
 ros2 bag record \
     /imx219/image_raw \
     /camera/fisheye1/image_raw \
-    -o multicam_calib_bag_2
+    -o multicam_calib_bag_4
 
 ros2 bag info multicam_calib_bag_2
 ```

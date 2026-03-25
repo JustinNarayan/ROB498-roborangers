@@ -51,6 +51,8 @@ class Imx219CalibrationPublisher(Node):
         self.declare_parameter("sensor_id",          0)
         self.declare_parameter("publish_rate_hz",    30.0)
         self.declare_parameter("jpeg_quality",       90)     # ← new
+        self.declare_parameter("preview_enabled",    True)
+        self.declare_parameter("preview_window_name", "IMX219 Calibration Preview")
 
         self.camera_name     = str(self.get_parameter("camera_name").value)
         self.frame_id        = str(self.get_parameter("frame_id").value)
@@ -67,6 +69,9 @@ class Imx219CalibrationPublisher(Node):
         distortion_model     = str(self.get_parameter("distortion_model").value)
         publish_rate_hz      = float(self.get_parameter("publish_rate_hz").value)
         self._jpeg_quality   = int(self.get_parameter("jpeg_quality").value)
+        self._preview_enabled = bool(self.get_parameter("preview_enabled").value)
+        self._preview_window_name = str(self.get_parameter("preview_window_name").value)
+        self._preview_available = self._preview_enabled
 
         if not opencv_has_gstreamer(cv2):
             raise RuntimeError(camera_backend_diagnostic(cv2))
@@ -142,7 +147,8 @@ class Imx219CalibrationPublisher(Node):
             f"Publishing IMX219 frames:\n"
             f"  raw        → {image_topic}\n"
             f"  compressed → {compressed_topic}  (JPEG q={self._jpeg_quality})\n"
-            f"  camera info→ {camera_info_topic}"
+            f"  camera info→ {camera_info_topic}\n"
+            f"  preview    → {'enabled' if self._preview_enabled else 'disabled'}"
         )
 
     # -----------------------------------------------------------------------
@@ -169,9 +175,12 @@ class Imx219CalibrationPublisher(Node):
         with self._frame_lock:
             if not self._frame_ready:
                 return
-            frame = self._latest_frame
+            frame = self._latest_frame.copy()
 
         stamp = self.get_clock().now().to_msg()
+
+        if self._preview_available:
+            self._show_preview(frame)
 
         # ── Raw image (for camera_calibration / intrinsics workflow) ─────────
         #image_msg = numpy_to_image_msg(frame, stamp, self.frame_id, "bgr8")
@@ -198,10 +207,48 @@ class Imx219CalibrationPublisher(Node):
         )
         self.camera_info_pub.publish(camera_info_msg)
 
+    def _show_preview(self, frame) -> None:
+        preview = frame.copy()
+        height, width = preview.shape[:2]
+        cv2.putText(
+            preview,
+            f"{self.camera_name} {width}x{height}",
+            (16, 32),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            preview,
+            "Press q in the preview window to hide it",
+            (16, height - 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        try:
+            cv2.imshow(self._preview_window_name, preview)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                cv2.destroyWindow(self._preview_window_name)
+                self._preview_available = False
+                self.get_logger().info("Preview window closed by user")
+        except cv2.error as exc:
+            self._preview_available = False
+            self.get_logger().warning(
+                f"Preview disabled because OpenCV GUI is unavailable: {exc}")
+
     # -----------------------------------------------------------------------
 
     def destroy_node(self) -> None:
         self._stop_event.set()
+        if self._preview_enabled:
+            cv2.destroyAllWindows()
         if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()
         super().destroy_node()
