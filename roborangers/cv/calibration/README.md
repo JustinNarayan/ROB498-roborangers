@@ -49,10 +49,12 @@ Default topics:
 - `/camera/fisheye2/image_raw`
 - `/camera/fisheye2/camera_info`
 
-## Export T265 intrinsics
+## Export T265 intrinsics with Realsense actively publishing
 
 ```bash
-ros2 run roborangers export_t265_intrinsics.py -- --output-dir /tmp/t265_calibration
+ros2 run roborangers export_t265_intrinsics.py -- \
+  --source topics \
+  --output-dir /tmp/t265_calibration
 ```
 
 ## Generate Kalibr YAML files
