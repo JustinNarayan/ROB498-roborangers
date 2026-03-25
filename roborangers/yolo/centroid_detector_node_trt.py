@@ -12,11 +12,15 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 
-from roborangers.yolo.imx219_yolov5_trt import (
+from roborangers.yolo.imx219_yolov8n_trt import (
+    camera_backend_diagnostic,
+    opencv_has_gstreamer,
     YoloV8TRTDetector,
     draw_detections,
+    filter_detections_by_class,
     gstreamer_pipeline,
     load_class_names,
+    resolve_target_class_id,
 )
 
 
@@ -26,16 +30,21 @@ class CentroidDetectorNode(Node):
 
         self.declare_parameter("model_path", "")
         self.declare_parameter("class_names_path", "")
-        self.declare_parameter("target_class_name", "rc_car")
+        self.declare_parameter("target_class_name", "")
+        self.declare_parameter("target_class_id", -1)
         self.declare_parameter("confidence_threshold", 0.35)
         self.declare_parameter("iou_threshold", 0.45)
         self.declare_parameter("input_size", 640)
-        self.declare_parameter("camera_width", 1280)
-        self.declare_parameter("camera_height", 720)
-        self.declare_parameter("display_width", 1280)
-        self.declare_parameter("display_height", 720)
+        # Camera defaults updated to match training data capture:
+        #   sensor-mode=3 => 1640x1232 @ 30fps, flip_method=2 (180deg rotation)
+        self.declare_parameter("camera_width", 1640)
+        self.declare_parameter("camera_height", 1232)
+        self.declare_parameter("display_width", 1640)
+        self.declare_parameter("display_height", 1232)
         self.declare_parameter("camera_fps", 30)
-        self.declare_parameter("flip_method", 0)
+        self.declare_parameter("flip_method", 2)
+        self.declare_parameter("sensor_mode", 3)
+        self.declare_parameter("sensor_id", 0)
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("display", False)
 
@@ -45,8 +54,12 @@ class CentroidDetectorNode(Node):
 
         class_names_path = str(self.get_parameter("class_names_path").value)
         self.class_names = load_class_names(class_names_path)
-        self.target_class_name = str(self.get_parameter("target_class_name").value)
+        self.target_class_name = str(self.get_parameter("target_class_name").value).strip()
+        self.target_class_id_param = int(self.get_parameter("target_class_id").value)
         self.target_class_id = self._resolve_target_class_id()
+
+        if not opencv_has_gstreamer():
+            raise RuntimeError(camera_backend_diagnostic())
 
         conf_th = float(self.get_parameter("confidence_threshold").value)
         iou_th = float(self.get_parameter("iou_threshold").value)
@@ -68,6 +81,8 @@ class CentroidDetectorNode(Node):
         self.display_height = int(self.get_parameter("display_height").value)
         self.camera_fps = int(self.get_parameter("camera_fps").value)
         self.flip_method = int(self.get_parameter("flip_method").value)
+        self.sensor_mode = int(self.get_parameter("sensor_mode").value)
+        self.sensor_id = int(self.get_parameter("sensor_id").value)
         self.display = bool(self.get_parameter("display").value)
 
         self.centroid_pub = self.create_publisher(
@@ -83,10 +98,13 @@ class CentroidDetectorNode(Node):
             display_height=self.display_height,
             framerate=self.camera_fps,
             flip_method=self.flip_method,
+            sensor_mode=self.sensor_mode,
+            sensor_id = self.sensor_id,
         )
+        self.get_logger().info(f"Opening camera pipeline: {pipeline}")
         self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if not self.cap.isOpened():
-            raise RuntimeError("Could not open IMX219 camera pipeline")
+            raise RuntimeError(f"Could not open IMX219 camera pipeline\nPipeline: {pipeline}")
 
         publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         period_sec = 1.0 / max(1.0, publish_rate_hz)
@@ -94,22 +112,43 @@ class CentroidDetectorNode(Node):
         self.get_logger().info("Centroid detector node started (TensorRT backend)")
 
     def _resolve_target_class_id(self) -> Optional[int]:
-        if not self.class_names:
-            return None
-        if self.target_class_name not in self.class_names:
+        explicit_target_class_id = (
+            self.target_class_id_param if self.target_class_id_param >= 0 else None
+        )
+        target_class_id = resolve_target_class_id(
+            self.class_names,
+            target_class_name=self.target_class_name,
+            target_class_id=explicit_target_class_id,
+        )
+
+        if target_class_id is not None:
+            target_label = str(target_class_id)
+            if self.class_names and 0 <= target_class_id < len(self.class_names):
+                target_label = self.class_names[target_class_id]
+            self.get_logger().info(
+                f"Tracking target class {target_class_id} ({target_label})"
+            )
+            return target_class_id
+
+        if self.target_class_name and self.class_names:
             self.get_logger().warn(
                 f"target_class_name '{self.target_class_name}' not found in classes; "
                 "using top detection"
             )
-            return None
-        return self.class_names.index(self.target_class_name)
+        elif self.target_class_name:
+            self.get_logger().warn(
+                "target_class_name was set but class_names_path is empty; using top detection"
+            )
+        else:
+            self.get_logger().info("No target class configured; using top detection")
+        return None
 
     def _select_target(self, detections):
         if not detections:
             return None
         if self.target_class_id is None:
             return detections[0]
-        filtered = [d for d in detections if d.class_id == self.target_class_id]
+        filtered = filter_detections_by_class(detections, self.target_class_id)
         return filtered[0] if filtered else None
 
     def _publish_lost(self) -> None:

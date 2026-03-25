@@ -23,7 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from yolo.imx219_yolov5_trt import YoloV8TRTDetector, draw_detections, load_class_names
+from yolo.imx219_yolov8n_trt import YoloV8TRTDetector, draw_detections, load_class_names
+from yolo.imx219_yolov8n_trt import filter_detections_by_class, resolve_target_class_id
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,15 +59,22 @@ def parse_args() -> argparse.Namespace:
         help="Inference image size (default: 320). Lower uses less memory.",
     )
     parser.add_argument(
+        "--target-class-id",
         "--car-class-id",
+        dest="target_class_id",
         type=int,
-        default=2,
-        help="Class id to track when --all-classes is not set (default: 2).",
+        default=-1,
+        help="Optional class id to show when --all-classes is not set (default: disabled).",
+    )
+    parser.add_argument(
+        "--target-class-name",
+        default="",
+        help="Optional class name to show when --all-classes is not set.",
     )
     parser.add_argument(
         "--all-classes",
         action="store_true",
-        help="Show all detected classes instead of only --car-class-id.",
+        help="Show all detected classes.",
     )
     parser.add_argument(
         "--skip-frames",
@@ -98,12 +106,6 @@ def resolve_path(path_str: str, script_path: Path) -> Path:
     return (script_path.parent / path).resolve()
 
 
-def filter_detections(detections, show_all: bool, class_id: int):
-    if show_all:
-        return detections
-    return [det for det in detections if det.class_id == class_id]
-
-
 def run() -> None:
     args = parse_args()
     script_path = Path(__file__).resolve()
@@ -119,6 +121,27 @@ def run() -> None:
         raise FileNotFoundError(f"TensorRT engine not found: {model_path}")
 
     class_names = load_class_names(args.class_names) if args.class_names else None
+
+    explicit_target_class_id = args.target_class_id if args.target_class_id >= 0 else None
+    target_class_id = None
+    if not args.all_classes:
+        target_class_id = resolve_target_class_id(
+            class_names,
+            target_class_name=args.target_class_name,
+            target_class_id=explicit_target_class_id,
+        )
+
+    if args.all_classes:
+        print("Displaying detections from all classes")
+    elif explicit_target_class_id is not None:
+        print(f"Filtering detections to class id {explicit_target_class_id}")
+    elif target_class_id is not None:
+        target_label = str(target_class_id)
+        if class_names and 0 <= target_class_id < len(class_names):
+            target_label = class_names[target_class_id]
+        print(f"Filtering detections to class {target_class_id} ({target_label})")
+    else:
+        print("No target class filter resolved; displaying detections from all classes")
 
     print(f"Loading TensorRT model: {model_path}")
     detector = YoloV8TRTDetector(
@@ -163,10 +186,10 @@ def run() -> None:
                 inference_start = time.monotonic()
 
                 detections = detector.infer(frame)
-                cached_detections = filter_detections(
-                    detections,
-                    show_all=args.all_classes,
-                    class_id=args.car_class_id,
+                cached_detections = (
+                    list(detections)
+                    if args.all_classes
+                    else filter_detections_by_class(detections, target_class_id)
                 )
 
             rendered = draw_detections(frame, cached_detections, class_names=class_names)
@@ -200,4 +223,12 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    run()kip-frames 1 \
+>   --max-fps 10
+No target class filter resolved; displaying detections from all classes
+Loading TensorRT model: /home/jetson/yolov8ntrained.engine
+[TensorRT] WARNING: Using an engine plan file across different models of devices is not recommended and is likely to affect performance or even cause errors.
+Running warm-up inference (this takes ~15s on Jetson Nano, please wait)...
+Warm-up complete.
+Starting display loop. Press 'q' to quit.
+Done.
