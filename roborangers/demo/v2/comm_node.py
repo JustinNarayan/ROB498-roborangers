@@ -338,7 +338,6 @@ class CommNode(HandlersMixin, Node):
 
             elif self.mission_state == MissionState.GOING_HOME:
                 # Land once we are close enough to the home hover pose
-                self.land_requested = False # clear flag
                 if self.at_pose(self.vision_state.get_init_hover_pose()):
                     self.mission_state = MissionState.LANDING
 
@@ -381,6 +380,9 @@ class CommNode(HandlersMixin, Node):
             self.launch_requested = False
         if self.mission_state != MissionState.AWAITING_TEST:
             self.test_requested = False
+            # Land flag cleared once we reach LANDING — not before
+        if self.mission_state == MissionState.LANDING:
+            self.land_requested = False
 
         # ---- Publish setpoint-------------------------------------
         current_setpoint = self.get_current_setpoint()

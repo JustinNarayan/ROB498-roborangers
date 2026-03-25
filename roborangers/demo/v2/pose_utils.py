@@ -1,6 +1,5 @@
 from geometry_msgs.msg import PoseStamped, PoseArray
-from tf_transformations import euler_from_quaternion, quaternion_from_euler
-from tf.transformations import tft
+from tf_transformations import euler_from_quaternion, quaternion_from_euler, euler_matrix, quaternion_matrix, quaternion_from_matrix
 import numpy as np
 
 ###############################################
@@ -89,7 +88,7 @@ def make_transform_matrix(x, y, z, roll, pitch, yaw):
     """
     Create a 4x4 homogeneous transform matrix from translation and RPY.
     """
-    T = tft.euler_matrix(roll, pitch, yaw)  # rotation
+    T = euler_matrix(roll, pitch, yaw)  # rotation
     T[0:3, 3] = [x, y, z]                   # translation
     return T
 
@@ -100,7 +99,7 @@ def pose_to_matrix(pose: PoseStamped):
     pos = pose.pose.position
     ori = pose.pose.orientation
 
-    T = tft.quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
+    T = quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
     T[0:3, 3] = [pos.x, pos.y, pos.z]
     return T
 
@@ -112,7 +111,7 @@ def matrix_to_pose(T, frame_id="map"):
     pose.header.frame_id = frame_id
 
     trans = T[0:3, 3]
-    quat = tft.quaternion_from_matrix(T)
+    quat = quaternion_from_matrix(T)
 
     pose.pose.position.x = trans[0]
     pose.pose.position.y = trans[1]
@@ -131,20 +130,17 @@ def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped):
     known rigid-body offset between the two sensors.
     """
     # ===================== ADJUST HERE =====================
-    tx = 0.23     # +X
-    ty = 0.0     # Y
-    tz = -0.12   # -Z
+    tx = 0 # -X
+    ty = 0     # Y
+    tz = 0   # +Z
 
     roll  = 0.0
-    pitch = np.deg2rad(45.0)   # +45 deg about Y
+    pitch = -3.14/4 # -pi/4
     yaw   = 0.0
     # ======================================================
-
-    # Transform from VICON → REALSENSE
-    T_vicon_to_rs = make_transform_matrix(tx, ty, tz, roll, pitch, yaw)
-
-    # We want REALSENSE → VICON, so invert it
-    T_rs_to_vicon = np.linalg.inv(T_vicon_to_rs)
+    
+    # We want REALSENSE → VICON
+    T_rs_to_vicon = make_transform_matrix(tx, ty, tz, roll, pitch, yaw)
 
     # Convert input pose to matrix
     T_pose_rs = pose_to_matrix(pose_realsense)
