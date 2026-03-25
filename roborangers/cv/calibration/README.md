@@ -113,3 +113,5 @@ sudo docker run --rm -it \
 ```bash
 cd ~/ros2_ws && colcon build --packages-select roborangers --cmake-force-configure 2>&1 | tail -20
 ```
+
+# Can use calibration script as well

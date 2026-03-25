@@ -8,9 +8,9 @@ Requirements:
 
 Usage:
     python3 calibrate_extrinsics.py \
-        --bag /path/to/multicam_calib_bag \
-        --cameras /path/to/cameras.yaml \
-        --aprilgrid /path/to/aprilgrid.yaml \
+        --bag /home/jetson/calibration_inputs/multicam_calib_bag_2 \
+        --cameras /home/jetson/calibration_inputs/calibration_params/cameras.yaml \
+        --aprilgrid /home/jetson/calibration_inputs/calibration_params/aprilgrid.yaml \
         --output extrinsics.yaml
 """
 

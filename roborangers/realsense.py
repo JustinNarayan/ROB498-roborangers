@@ -2,48 +2,64 @@
 
 import math
 import threading
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
-import pyrealsense2 as rs
+import yaml
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CameraInfo, Image
 
 
 # ---------------------------------------------------------------------------
-# Helpers (from t265_stereo.py)
+# Helpers
 # ---------------------------------------------------------------------------
 
-def get_extrinsics(src, dst):
-    """Returns (R, T) transform from src stream to dst stream."""
-    extrinsics = src.get_extrinsics_to(dst)
-    R = np.reshape(extrinsics.rotation, [3, 3]).T
-    T = np.array(extrinsics.translation)
-    return R, T
+
+def ros_camera_matrix(camera_info: CameraInfo):
+    return np.array(camera_info.k, dtype=np.float64).reshape(3, 3)
 
 
-def camera_matrix(intrinsics):
-    return np.array([[intrinsics.fx,             0, intrinsics.ppx],
-                     [            0, intrinsics.fy, intrinsics.ppy],
-                     [            0,             0,              1]])
+def ros_fisheye_distortion(camera_info: CameraInfo):
+    coeffs = list(camera_info.d[:4])
+    if len(coeffs) < 4:
+        coeffs.extend([0.0] * (4 - len(coeffs)))
+    return np.array(coeffs, dtype=np.float64)
 
 
-def fisheye_distortion(intrinsics):
-    return np.array(intrinsics.coeffs[:4])
+def image_msg_to_numpy(msg: Image):
+    if msg.encoding not in ('mono8', '8UC1'):
+        raise ValueError(f'Unsupported fisheye encoding: {msg.encoding}')
+
+    image = np.frombuffer(msg.data, dtype=np.uint8)
+    image = image.reshape((msg.height, msg.step))
+    return image[:, :msg.width].copy()
+
+
+def invert_extrinsics(R, T):
+    R_inv = R.T
+    T_inv = -R_inv @ T
+    return R_inv, T_inv
 
 
 # ---------------------------------------------------------------------------
 # ROS2 Node
 # ---------------------------------------------------------------------------
 
-class CameraPoseForward(Node):
+class CameraPoseDepthForward(Node):
+
+    DEFAULT_EXTRINSICS_PATH = (
+        Path(__file__).resolve().parent / 'cv' / 'calibration' / 't265_calibration' / 't265_stereo_extrinsics.yaml'
+    )
 
     def __init__(self):
-        super().__init__('camera_pose_forward')
+        super().__init__('camera_pose_depth_forward')
 
         # ── ROS2 pub/sub ────────────────────────────────────────────────────
         qos = QoSProfile(depth=10)
@@ -57,160 +73,201 @@ class CameraPoseForward(Node):
 
         self.pub_mavros_setpoint = self.create_publisher(
             PoseStamped, '/mavros/setpoint_position/local', 20)
-
-        # ── Shared depth state (written by RS thread, read by ROS) ──────────
+            
+        # ── Shared depth state ──────────────────────────────────────────────
         self._depth_lock   = threading.Lock()
         self._depth_map    = None          # float32 array (cropped centre)
-        self._crop_offsets = None          # (rs, re, cs_valid, ce_valid) row/col slice info
+        self._frame_mutex  = threading.Lock()
+        self._frame_data   = {"left": None, "right": None, "ts": None}
+        self._depth_thread = None
+        self._stereo_ready = False
+        self._depth_enabled = False
+        self._ros_left_info = None
+        self._ros_right_info = None
+        self._ros_depth_error_logged = False
+        self._extrinsics_path = Path(
+            self.declare_parameter(
+                't265_extrinsics_path',
+                str(self.DEFAULT_EXTRINSICS_PATH),
+            ).value
+        ).expanduser()
 
-        # ── Start the RealSense stereo pipeline ─────────────────────────────
-        self._setup_realsense()
+        # ── Start ROS-topic depth source if calibration is available ───────
+        self._setup_ros_fisheye_subscribers(qos)
 
-        self.get_logger().info('camera_pose_forward node started')
+        self.get_logger().info('camera_pose_depth_forward node started')
 
     # -----------------------------------------------------------------------
-    # RealSense setup
+    # ROS fisheye setup
     # -----------------------------------------------------------------------
 
-    def _setup_realsense(self):
-        """
-        Configure the T265 pipeline, compute rectification maps once, and
-        start an async callback that writes disparity→depth into self._depth_map.
+    def _setup_ros_fisheye_subscribers(self, qos):
+        extrinsics = self._load_ros_extrinsics()
+        if extrinsics is None:
+            self.get_logger().warn(
+                'Depth estimation disabled. ROS fisheye topics are available, but stereo extrinsics '
+                f'file was not found at {self._extrinsics_path}. Generate it once with '
+                'export_t265_intrinsics.py --source device when the camera is not in use.')
+            return
 
-        Frame layout (body / pose frame origin):
-          - Sits midway between the two fisheye cameras.
-          - fisheye(1) = left camera,  fisheye(2) = right camera.
-          - Positive X  → right (toward fisheye-2 side)
-          - Positive Y  → down
-          - Positive Z  → backward (out of back of device)
-          All depths returned below are in metres along the camera Z axis
-          of the *rectified left* frame.
-        """
-        self._frame_mutex = threading.Lock()
-        self._frame_data  = {"left": None, "right": None, "ts": None}
+        self._ros_R, self._ros_T = extrinsics
+        self.create_subscription(CameraInfo, '/camera/fisheye1/camera_info', self._left_info_callback, qos)
+        self.create_subscription(CameraInfo, '/camera/fisheye2/camera_info', self._right_info_callback, qos)
+        self.create_subscription(Image, '/camera/fisheye1/image_raw', self._left_image_callback, qos)
+        self.create_subscription(Image, '/camera/fisheye2/image_raw', self._right_image_callback, qos)
 
-        self._pipe = rs.pipeline()
-        cfg = rs.config()
-        # enable both fisheye streams (pose is streamed separately by the
-        # realsense-ros wrapper, so we don't need to enable it here)
-        cfg.enable_stream(rs.stream.fisheye, 1)
-        cfg.enable_stream(rs.stream.fisheye, 2)
-        self._pipe.start(cfg, self._rs_callback)
+    def _load_ros_extrinsics(self):
+        if not self._extrinsics_path.is_file():
+            return None
 
-        # ── Intrinsics / extrinsics ─────────────────────────────────────────
-        profiles = self._pipe.get_active_profile()
-        streams  = {
-            "left":  profiles.get_stream(rs.stream.fisheye, 1).as_video_stream_profile(),
-            "right": profiles.get_stream(rs.stream.fisheye, 2).as_video_stream_profile(),
-        }
-        intr = {k: streams[k].get_intrinsics() for k in streams}
+        data = yaml.safe_load(self._extrinsics_path.read_text())
+        rotation = np.array(data['rotation_row_major'], dtype=np.float64).reshape(3, 3)
+        translation = np.array(data['translation_m'], dtype=np.float64)
+        source = data.get('source')
+        target = data.get('target')
 
-        K_left  = camera_matrix(intr["left"])
-        D_left  = fisheye_distortion(intr["left"])
-        K_right = camera_matrix(intr["right"])
-        D_right = fisheye_distortion(intr["right"])
-        (width, height) = (intr["left"].width, intr["left"].height)
+        if source == 'fisheye1' and target == 'fisheye2':
+            return rotation, translation
+        if source == 'fisheye2' and target == 'fisheye1':
+            return invert_extrinsics(rotation, translation)
 
-        R, T = get_extrinsics(streams["left"], streams["right"])
+        raise RuntimeError(
+            f'Unsupported stereo extrinsics frame order in {self._extrinsics_path}: '
+            f'source={source}, target={target}')
 
-        # ── Stereo rectification ────────────────────────────────────────────
-        (R_left, R_right, P_left, P_right, Q) = \
-            cv2.fisheye.stereoRectify(
-                K1=K_left,  D1=D_left,
-                K2=K_right, D2=D_right,
-                imageSize=(width, height),
-                R=R, tvec=T,
-                flags=cv2.CALIB_ZERO_DISPARITY,
-                newImageSize=(width, height),
-                balance=0, fov_scale=1.0)[0:5]
+    def _left_info_callback(self, msg):
+        self._ros_left_info = msg
+        self._maybe_configure_ros_stereo()
 
-        # Centre the principal point
-        P_left[0][2]  = P_right[0][2] = width  / 2
-        P_left[1][2]  = P_right[1][2] = height / 2
+    def _right_info_callback(self, msg):
+        self._ros_right_info = msg
+        self._maybe_configure_ros_stereo()
 
-        # ── Undistort / rectify maps (computed once) ─────────────────────────
+    def _maybe_configure_ros_stereo(self):
+        if self._stereo_ready or self._ros_left_info is None or self._ros_right_info is None:
+            return
+
+        self._configure_stereo(
+            K_left=ros_camera_matrix(self._ros_left_info),
+            D_left=ros_fisheye_distortion(self._ros_left_info),
+            K_right=ros_camera_matrix(self._ros_right_info),
+            D_right=ros_fisheye_distortion(self._ros_right_info),
+            width=self._ros_left_info.width,
+            height=self._ros_left_info.height,
+            R=self._ros_R,
+            T=self._ros_T,
+            source='ros-topics',
+        )
+
+    def _left_image_callback(self, msg):
+        try:
+            left = image_msg_to_numpy(msg)
+        except ValueError as exc:
+            if not self._ros_depth_error_logged:
+                self._ros_depth_error_logged = True
+                self.get_logger().warn(str(exc))
+            return
+
+        with self._frame_mutex:
+            self._frame_data['left'] = left
+            self._frame_data['ts'] = msg.header.stamp
+
+    def _right_image_callback(self, msg):
+        try:
+            right = image_msg_to_numpy(msg)
+        except ValueError as exc:
+            if not self._ros_depth_error_logged:
+                self._ros_depth_error_logged = True
+                self.get_logger().warn(str(exc))
+            return
+
+        with self._frame_mutex:
+            self._frame_data['right'] = right
+            self._frame_data['ts'] = msg.header.stamp
+
+    def _configure_stereo(self, *, K_left, D_left, K_right, D_right, width, height, R, T, source):
+        (R_left, R_right, P_left, P_right, Q) = cv2.fisheye.stereoRectify(
+            K1=K_left, D1=D_left,
+            K2=K_right, D2=D_right,
+            imageSize=(width, height),
+            R=R, tvec=T,
+            flags=cv2.CALIB_ZERO_DISPARITY,
+            newImageSize=(width, height),
+            balance=0, fov_scale=1.0,
+        )[0:5]
+
+        P_left[0][2] = P_right[0][2] = width / 2
+        P_left[1][2] = P_right[1][2] = height / 2
+
         m1type = cv2.CV_32FC1
         lm1, lm2 = cv2.fisheye.initUndistortRectifyMap(
-            K_left,  D_left,  R_left,  P_left,  (width, height), m1type)
+            K_left, D_left, R_left, P_left, (width, height), m1type)
         rm1, rm2 = cv2.fisheye.initUndistortRectifyMap(
             K_right, D_right, R_right, P_right, (width, height), m1type)
-        self._undistort_rectify = {"left": (lm1, lm2), "right": (rm1, rm2)}
+        self._undistort_rectify = {'left': (lm1, lm2), 'right': (rm1, rm2)}
 
-        # ── Centre-crop region (edges of fisheye are unreliable) ─────────────
         half = int((height / 3) / 2)
         rs_row = int(height / 2 - half)
         re_row = int(height / 2 + half)
-        cs_col = int(width  / 2 - half)
-        ce_col = int(width  / 2 + half)
+        cs_col = int(width / 2 - half)
+        ce_col = int(width / 2 + half)
         Q[0][3] = Q[1][3] = -half
 
-        # SGBM needs a head-start on the left for max_disp blank pixels
         min_disp = 0
-        num_disp = 112            # must be divisible by 16
+        num_disp = 112
         max_disp = min_disp + num_disp
         cs_offset = min(max_disp, cs_col)
         cs_col -= cs_offset
 
-        self._crop = (rs_row, re_row, cs_col, ce_row := ce_col, cs_offset)
+        self._crop = (rs_row, re_row, cs_col, ce_col, cs_offset)
+        self._Q = Q
+        self._focal_len = float(Q[2][3])
+        self._baseline = float(abs(T[0]))
+        self._P_left = P_left
+        self._min_disp = min_disp
+        self._num_disp = num_disp
 
-        # Store Q and focal length for depth conversion
-        self._Q           = Q
-        self._focal_len   = Q[2][3]          # focal length in pixels
-        self._baseline    = abs(T[0])         # ~0.064 m for T265
-        self._P_left      = P_left
-        self._min_disp    = min_disp
-        self._num_disp    = num_disp
-
-        # ── SGBM stereo matcher ──────────────────────────────────────────────
         ws = 3
         self._stereo = cv2.StereoSGBM_create(
             minDisparity=min_disp,
             numDisparities=num_disp,
             blockSize=16,
-            P1=8  * 3 * ws ** 2,
+            P1=8 * 3 * ws ** 2,
             P2=32 * 3 * ws ** 2,
             disp12MaxDiff=1,
             uniquenessRatio=10,
             speckleWindowSize=100,
-            speckleRange=32)
+            speckleRange=32,
+        )
 
-        # ── Background worker that keeps depth_map fresh ─────────────────────
-        self._depth_thread = threading.Thread(
-            target=self._depth_worker, daemon=True)
-        self._depth_thread.start()
+        if self._depth_thread is None:
+            self._depth_thread = threading.Thread(target=self._depth_worker, daemon=True)
+            self._depth_thread.start()
+
+        self._stereo_ready = True
+        self._depth_enabled = True
 
         fov_h = 2 * math.atan((ce_col - cs_col) / self._focal_len / 2) * 180 / math.pi
         fov_v = 2 * math.atan((re_row - rs_row) / self._focal_len / 2) * 180 / math.pi
         self.get_logger().info(
-            f'Stereo depth ready | baseline={self._baseline*100:.1f} cm | '
+            f'Stereo depth ready from {source} | baseline={self._baseline*100:.1f} cm | '
             f'FOV {fov_h:.0f}°W × {fov_v:.0f}°H (centre crop only)')
-
-    # -----------------------------------------------------------------------
-    # RealSense async callback  (runs on a librealsense thread)
-    # -----------------------------------------------------------------------
-
-    def _rs_callback(self, frame):
-        if frame.is_frameset():
-            fs = frame.as_frameset()
-            left  = np.asanyarray(fs.get_fisheye_frame(1).as_video_frame().get_data())
-            right = np.asanyarray(fs.get_fisheye_frame(2).as_video_frame().get_data())
-            ts    = fs.get_timestamp()
-            with self._frame_mutex:
-                self._frame_data = {"left": left, "right": right, "ts": ts}
 
     # -----------------------------------------------------------------------
     # Background depth worker  (continuous; daemon so it exits with the node)
     # -----------------------------------------------------------------------
 
     def _depth_worker(self):
-        rs_row, re_row, cs_col, ce_col, cs_offset = self._crop
-
         while rclpy.ok():
+            if not self._stereo_ready:
+                continue
+
+            rs_row, re_row, cs_col, ce_col, cs_offset = self._crop
             with self._frame_mutex:
-                if self._frame_data["ts"] is None:
+                if self._frame_data['left'] is None or self._frame_data['right'] is None:
                     continue
-                left  = self._frame_data["left"].copy()
-                right = self._frame_data["right"].copy()
+                left = self._frame_data['left'].copy()
+                right = self._frame_data['right'].copy()
 
             # Undistort + rectify
             lm1, lm2 = self._undistort_rectify["left"]
@@ -236,7 +293,7 @@ class CameraPoseForward(Node):
     # Public API: get depth at an (u, v) pixel in the rectified centre crop
     # -----------------------------------------------------------------------
 
-    def get_depth_at_pixel(self, u: int, v: int) -> float | None:
+    def get_depth_at_pixel(self, u: int, v: int) -> Optional[float]:
         """
         Returns depth in metres at pixel (u, v) of the rectified centre-crop
         image, or None if the depth map is not yet available / pixel invalid.
@@ -290,7 +347,6 @@ class CameraPoseForward(Node):
     # -----------------------------------------------------------------------
 
     def destroy_node(self):
-        self._pipe.stop()
         super().destroy_node()
 
 
@@ -298,7 +354,7 @@ class CameraPoseForward(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CameraPoseForward()
+    node = CameraPoseDepthForward()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
