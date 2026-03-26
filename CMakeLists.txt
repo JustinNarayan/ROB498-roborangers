@@ -4,6 +4,7 @@ project(roborangers)
 find_package(ament_cmake REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -29,6 +30,14 @@ install(PROGRAMS
   roborangers/yolo/imx219_yolov8_trt.py
   roborangers/yolo/imx219_yolov8n_trt.py
   roborangers/yolo/centroid_detector_node_trt.py
+  roborangers/cv/opencv/yolov8_video_inference.py
+  roborangers/cv/yolo/imx219_yolov8_trt.py
+  roborangers/cv/yolo/imx219_yolov8n_trt.py
+  roborangers/cv/yolo/centroid_detector_node_trt.py
+  roborangers/cv/calibration/imx219_calibration_publisher.py
+  roborangers/cv/calibration/t265_fisheye_publisher.py
+  roborangers/cv/calibration/export_t265_intrinsics.py
+  roborangers/cv/calibration/generate_kalibr_files.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
