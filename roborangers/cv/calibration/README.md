@@ -9,7 +9,7 @@ colcon build --symlink-install --packages-select roborangers
 source install/setup.bash
 ```
 
-then run:
+Then run:
 
 ```bash
 ros2 run roborangers imx219_calibration_publisher.py
