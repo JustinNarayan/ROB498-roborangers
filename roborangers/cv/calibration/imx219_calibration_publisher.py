@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Publish IMX219 frames to ROS2 topics for camera_calibration and bag capture."""
-
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import cv2
@@ -36,36 +35,36 @@ class Imx219CalibrationPublisher(Node):
     def __init__(self) -> None:
         super().__init__("imx219_calibration_publisher")
 
-        self.declare_parameter("camera_name", "imx219")
-        self.declare_parameter("frame_id", "imx219_optical_frame")
-        self.declare_parameter("image_topic", "/imx219/image_raw")
-        self.declare_parameter("camera_info_topic", "/imx219/camera_info")
-        self.declare_parameter("camera_info_path", "")
-        self.declare_parameter("distortion_model", "plumb_bob")
-        self.declare_parameter("capture_width", 1640)
-        self.declare_parameter("capture_height", 1232)
-        self.declare_parameter("display_width", 1640)
-        self.declare_parameter("display_height", 1232)
-        self.declare_parameter("framerate", 30)
-        self.declare_parameter("flip_method", 2)
-        self.declare_parameter("sensor_mode", 3)
-        self.declare_parameter("sensor_id", 0)
-        self.declare_parameter("publish_rate_hz", 30.0)
+        self.declare_parameter("camera_name",        "imx219")
+        self.declare_parameter("frame_id",           "imx219_optical_frame")
+        self.declare_parameter("image_topic",        "/imx219/image_raw")
+        self.declare_parameter("camera_info_topic",  "/imx219/camera_info")
+        self.declare_parameter("camera_info_path",   "")
+        self.declare_parameter("distortion_model",   "plumb_bob")
+        self.declare_parameter("capture_width",      1640)
+        self.declare_parameter("capture_height",     1232)
+        self.declare_parameter("display_width",      1640)
+        self.declare_parameter("display_height",     1232)
+        self.declare_parameter("framerate",          30)
+        self.declare_parameter("flip_method",        2)
+        self.declare_parameter("sensor_mode",        3)
+        self.declare_parameter("sensor_id",          0)
+        self.declare_parameter("publish_rate_hz",    30.0)
 
-        self.camera_name = str(self.get_parameter("camera_name").value)
-        self.frame_id = str(self.get_parameter("frame_id").value)
-        image_topic = str(self.get_parameter("image_topic").value)
-        camera_info_topic = str(self.get_parameter("camera_info_topic").value)
-
-        capture_width = int(self.get_parameter("capture_width").value)
-        capture_height = int(self.get_parameter("capture_height").value)
-        display_width = int(self.get_parameter("display_width").value)
-        display_height = int(self.get_parameter("display_height").value)
-        framerate = int(self.get_parameter("framerate").value)
-        flip_method = int(self.get_parameter("flip_method").value)
-        sensor_mode = int(self.get_parameter("sensor_mode").value)
-        sensor_id = int(self.get_parameter("sensor_id").value)
-        distortion_model = str(self.get_parameter("distortion_model").value)
+        self.camera_name     = str(self.get_parameter("camera_name").value)
+        self.frame_id        = str(self.get_parameter("frame_id").value)
+        image_topic          = str(self.get_parameter("image_topic").value)
+        camera_info_topic    = str(self.get_parameter("camera_info_topic").value)
+        capture_width        = int(self.get_parameter("capture_width").value)
+        capture_height       = int(self.get_parameter("capture_height").value)
+        display_width        = int(self.get_parameter("display_width").value)
+        display_height       = int(self.get_parameter("display_height").value)
+        framerate            = int(self.get_parameter("framerate").value)
+        flip_method          = int(self.get_parameter("flip_method").value)
+        sensor_mode          = int(self.get_parameter("sensor_mode").value)
+        sensor_id            = int(self.get_parameter("sensor_id").value)
+        distortion_model     = str(self.get_parameter("distortion_model").value)
+        publish_rate_hz      = float(self.get_parameter("publish_rate_hz").value)
 
         if not opencv_has_gstreamer(cv2):
             raise RuntimeError(camera_backend_diagnostic(cv2))
@@ -88,7 +87,19 @@ class Imx219CalibrationPublisher(Node):
                 f"{camera_backend_diagnostic(cv2)}"
             )
 
-        self.image_pub = self.create_publisher(Image, image_topic, 10)
+        # ── Shared frame state ───────────────────────────────────────────────
+        self._frame_lock  = threading.Lock()
+        self._latest_frame = None          # written by reader thread
+        self._frame_ready  = False         # flips True once first frame arrives
+
+        # ── Camera reader thread (decoupled from ROS timer) ──────────────────
+        self._stop_event = threading.Event()
+        self._reader_thread = threading.Thread(
+            target=self._camera_reader, daemon=True)
+        self._reader_thread.start()
+
+        # ── Publishers ───────────────────────────────────────────────────────
+        self.image_pub       = self.create_publisher(Image,      image_topic,       10)
         self.camera_info_pub = self.create_publisher(CameraInfo, camera_info_topic, 10)
 
         camera_info_path = str(self.get_parameter("camera_info_path").value).strip()
@@ -113,18 +124,39 @@ class Imx219CalibrationPublisher(Node):
                 distortion_model=distortion_model,
             )
 
-        publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
-        self.timer = self.create_timer(1.0 / max(1.0, publish_rate_hz), self._publish_frame)
+        self.timer = self.create_timer(
+            1.0 / max(1.0, publish_rate_hz), self._publish_frame)
 
         self.get_logger().info(
-            f"Publishing IMX219 frames on {image_topic} and camera info on {camera_info_topic}"
+            f"Publishing IMX219 frames on {image_topic} "
+            f"and camera info on {camera_info_topic}"
         )
 
+    # -----------------------------------------------------------------------
+    # Camera reader — runs in its own thread, never blocks the ROS executor
+    # -----------------------------------------------------------------------
+
+    def _camera_reader(self) -> None:
+        """Continuously drain frames from GStreamer as fast as they arrive."""
+        while not self._stop_event.is_set():
+            ok, frame = self.cap.read()   # blocks here, not in the timer
+            if not ok:
+                self.get_logger().warning(
+                    "Failed to read frame from IMX219", throttle_duration_sec=2.0)
+                continue
+            with self._frame_lock:
+                self._latest_frame = frame
+                self._frame_ready  = True
+
+    # -----------------------------------------------------------------------
+    # ROS timer callback — just grabs latest frame and publishes
+    # -----------------------------------------------------------------------
+
     def _publish_frame(self) -> None:
-        ok, frame = self.cap.read()
-        if not ok:
-            self.get_logger().warning("Failed to read frame from IMX219")
-            return
+        with self._frame_lock:
+            if not self._frame_ready:
+                return                     # camera not ready yet, skip tick
+            frame = self._latest_frame     # numpy arrays are reference-counted
 
         stamp = self.get_clock().now().to_msg()
         image_msg = numpy_to_image_msg(frame, stamp, self.frame_id, "bgr8")
@@ -135,11 +167,13 @@ class Imx219CalibrationPublisher(Node):
             int(frame.shape[1]),
             int(frame.shape[0]),
         )
-
         self.image_pub.publish(image_msg)
         self.camera_info_pub.publish(camera_info_msg)
 
-    def destroy_node(self):
+    # -----------------------------------------------------------------------
+
+    def destroy_node(self) -> None:
+        self._stop_event.set()
         if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()
         super().destroy_node()
