@@ -20,6 +20,16 @@ Default topics:
 - `/imx219/image_raw`
 - `/imx219/camera_info`
 
+Run the calibrator:
+
+```bash
+ros2 run camera_calibration cameracalibrator \
+  --size 8x6 \
+  --square 0.025 \
+  --camera_name imx219 \
+  image:=/imx219/image_raw \
+  camera:=/imx219
+```
 If you already have an `ost.yaml`, republish it with:
 
 ```bash
