@@ -42,10 +42,10 @@ DEBUG_VISION_DIVERGENCE = True
 ###############################################
 
 # How many radians the drone yaws per step while surveying
-SURVEY_ANGULAR_STEP_RADIANS = 0.1745  # ~10 degrees per step
+SURVEY_ANGULAR_STEP_RADIANS = 0.785  # ~45 degrees per step
 
 # How long the drone holds each angular step before advancing (nanoseconds)
-SURVEY_STEP_HOLD_TIME_NANOSECONDS = 1e9  # 1 second per step
+SURVEY_STEP_HOLD_TIME_NANOSECONDS = 5e9  # 5 second per step
 
 ###############################################
 #          T A R G E T   T R A C K I N G      #

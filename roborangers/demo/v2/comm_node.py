@@ -380,8 +380,7 @@ class CommNode(HandlersMixin, Node):
             self.launch_requested = False
         if self.mission_state != MissionState.AWAITING_TEST:
             self.test_requested = False
-            # Land flag cleared once we reach LANDING — not before
-        if self.mission_state == MissionState.LANDING:
+        if self.mission_state in (MissionState.GOING_HOME, MissionState.LANDING):
             self.land_requested = False
 
         # ---- Publish setpoint-------------------------------------

@@ -108,11 +108,11 @@ def transform_realsense_pose_to_vicon_frame(pose_realsense: PoseStamped, static_
     )
 
     # Apply positional offset from drone -> vicon
-    vicon_to_rs = [0, 0, -0.12] # x,y,z
+    vicon_to_rs = [0.23, 0, -0.12] # x,y,z
     if static_pos_transform is not None:
-        vicon_to_rs[0] -= static_pos_transform.position.x
-        vicon_to_rs[1] -= static_pos_transform.position.y
-        vicon_to_rs[2] -= static_pos_transform.position.z
+        vicon_to_rs[0] = static_pos_transform.position.x
+        vicon_to_rs[1] = static_pos_transform.position.y
+        vicon_to_rs[2] = static_pos_transform.position.z
 
     result = PoseStamped()
     result.pose.position.x = pose_realsense.pose.position.x - vicon_to_rs[0]
