@@ -65,3 +65,35 @@ ros2 run roborangers generate_kalibr_files.py -- \
 ```
 
 For a Kalibr omni model, add `--fisheye-kalibr-model omni --fisheye-xi <value>`.
+
+## Record ROS Bag for IMX219 and Left fisheye Camera
+
+```bash
+ros2 bag record \
+    /imx219/image_raw \
+    /camera/fisheye1/image_raw \
+    -o multicam_calib_bag
+```
+
+## Kalibir installation
+
+```bash
+docker pull stereolabs/kalibr
+# or build from source:
+git clone https://github.com/ethz-asl/kalibr.git
+cd kalibr
+docker build -t kalibr .
+```
+## Run Kalibir
+
+```bash
+docker run -it \
+    -v $(pwd):/data \
+    kalibr \
+    kalibr_calibrate_cameras \
+    --bag /data/multicam_calib_bag.bag \
+    --target /data/aprilgrid.yaml \
+    --models pinhole-radtan omni-equidist \
+    --topics /imx219/image_raw /camera/fisheye1/image_raw \
+    --dont-show-report
+```
