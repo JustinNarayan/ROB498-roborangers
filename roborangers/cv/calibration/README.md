@@ -106,3 +106,9 @@ docker run -it \
 ```
 
 If you recorded with `ros2 bag record`, the bag will usually be a directory containing `.db3` data rather than a ROS 1 `.bag` file. Put a copy of that bag directory alongside `aprilgrid.yaml` and `cameras.yaml`, or mount both paths into the container explicitly.
+
+## CMAKE force rebuild:
+
+```bash
+cd ~/ros2_ws && colcon build --packages-select roborangers --cmake-force-configure 2>&1 | tail -20
+```
