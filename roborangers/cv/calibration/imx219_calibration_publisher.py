@@ -102,10 +102,10 @@ class Imx219CalibrationPublisher(Node):
 
         # ── Publishers ───────────────────────────────────────────────────────
         # Raw publisher kept for camera_calibration (intrinsics) workflow
-        self.image_pub = self.create_publisher(Image, image_topic, 10)
+        #self.image_pub = self.create_publisher(Image, image_topic, 10)
 
         # Compressed publisher — used for Kalibr bag recording
-        compressed_topic = image_topic + "/compressed"
+        compressed_topic = image_topic# + "/compressed"
         self.compressed_pub = self.create_publisher(
             CompressedImage, compressed_topic, 10)
 
@@ -174,8 +174,8 @@ class Imx219CalibrationPublisher(Node):
         stamp = self.get_clock().now().to_msg()
 
         # ── Raw image (for camera_calibration / intrinsics workflow) ─────────
-        image_msg = numpy_to_image_msg(frame, stamp, self.frame_id, "bgr8")
-        self.image_pub.publish(image_msg)
+        #image_msg = numpy_to_image_msg(frame, stamp, self.frame_id, "bgr8")
+        #self.image_pub.publish(image_msg)
 
         # ── Compressed image (for Kalibr bag recording) ──────────────────────
         ok, jpeg_buf = cv2.imencode(

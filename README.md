@@ -62,3 +62,21 @@ See `roborangers/yolo/train_rc_car.md` for end-to-end dataset, training, export,
 (3) { in arena } `ros2 launch realsense2_camera rs_launch.py`
 (4) Run ROS node `ros2 run roborangers fe2.py`
 (5)
+
+## How to add new executables to this package
+# Add to CMakeLists.txt
+```bash
+install(PROGRAMS
+  roborangers/path/to/your_script.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+```
+# Make the source script executable
+```bash
+chmod +x ~/ros2_ws/src/ROB498/roborangers/ROB498-roborangers/roborangers/path/to/your_script.py
+```
+# Rebuild 
+```bash
+cd ~/ros2_ws
+colcon build --packages-select roborangers
+```

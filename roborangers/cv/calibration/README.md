@@ -74,18 +74,20 @@ For a Kalibr omni model, add `--fisheye-kalibr-model omni --fisheye-xi <value>`.
 ros2 bag record \
     /imx219/image_raw \
     /camera/fisheye1/image_raw \
-    -o multicam_calib_bag
+    -o multicam_calib_bag_2
+
+ros2 bag info multicam_calib_bag_2
 ```
+
+
 
 ## Kalibr installation
 
 ```bash
-docker pull stereolabs/kalibr
-# or build from source:
 cd /home/jetson
 git clone https://github.com/ethz-asl/kalibr.git
 cd kalibr
-docker build -t kalibr .
+sudo docker build -f Dockerfile_ros1_20_04 -t kalibr-arm64 .
 ```
 
 `docker build -t kalibr .` must be run inside the cloned ETH Kalibr repository, not inside your local calibration output folder.
@@ -93,19 +95,18 @@ docker build -t kalibr .
 ## Run Kalibr
 
 ```bash
-cd /tmp/kalibr_inputs
-docker run -it \
-    -v $(pwd):/data \
-    kalibr \
-    kalibr_calibrate_cameras \
+cd /home/jetson/kalibr_inputs
+sudo docker run --rm -it \
+  -v "$(pwd):/data" \
+  stereolabs/kalibr \
+  kalibr_calibrate_cameras \
   --bag /data/multicam_calib_bag/multicam_calib_bag_0.db3 \
-    --target /data/aprilgrid.yaml \
-    --models pinhole-radtan omni-equidist \
-    --topics /imx219/image_raw /camera/fisheye1/image_raw \
-    --dont-show-report
-```
-
-If you recorded with `ros2 bag record`, the bag will usually be a directory containing `.db3` data rather than a ROS 1 `.bag` file. Put a copy of that bag directory alongside `aprilgrid.yaml` and `cameras.yaml`, or mount both paths into the container explicitly.
+  --target /data/kalibr/aprilgrid.yaml \
+  --models pinhole-radtan omni-equidist \
+  --topics /imx219/image_raw /camera/fisheye1/image_raw \
+  --compressed \
+  --time-calibration \
+  --dont-show-report
 
 ## CMAKE force rebuild:
 
