@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 try:
     from roborangers.cv.calibration.common import (
@@ -50,6 +50,7 @@ class Imx219CalibrationPublisher(Node):
         self.declare_parameter("sensor_mode",        3)
         self.declare_parameter("sensor_id",          0)
         self.declare_parameter("publish_rate_hz",    30.0)
+        self.declare_parameter("jpeg_quality",       90)     # ← new
 
         self.camera_name     = str(self.get_parameter("camera_name").value)
         self.frame_id        = str(self.get_parameter("frame_id").value)
@@ -65,6 +66,7 @@ class Imx219CalibrationPublisher(Node):
         sensor_id            = int(self.get_parameter("sensor_id").value)
         distortion_model     = str(self.get_parameter("distortion_model").value)
         publish_rate_hz      = float(self.get_parameter("publish_rate_hz").value)
+        self._jpeg_quality   = int(self.get_parameter("jpeg_quality").value)
 
         if not opencv_has_gstreamer(cv2):
             raise RuntimeError(camera_backend_diagnostic(cv2))
@@ -88,20 +90,29 @@ class Imx219CalibrationPublisher(Node):
             )
 
         # ── Shared frame state ───────────────────────────────────────────────
-        self._frame_lock  = threading.Lock()
-        self._latest_frame = None          # written by reader thread
-        self._frame_ready  = False         # flips True once first frame arrives
+        self._frame_lock   = threading.Lock()
+        self._latest_frame = None
+        self._frame_ready  = False
 
-        # ── Camera reader thread (decoupled from ROS timer) ──────────────────
+        # ── Camera reader thread ─────────────────────────────────────────────
         self._stop_event = threading.Event()
         self._reader_thread = threading.Thread(
             target=self._camera_reader, daemon=True)
         self._reader_thread.start()
 
         # ── Publishers ───────────────────────────────────────────────────────
-        self.image_pub       = self.create_publisher(Image,      image_topic,       10)
-        self.camera_info_pub = self.create_publisher(CameraInfo, camera_info_topic, 10)
+        # Raw publisher kept for camera_calibration (intrinsics) workflow
+        self.image_pub = self.create_publisher(Image, image_topic, 10)
 
+        # Compressed publisher — used for Kalibr bag recording
+        compressed_topic = image_topic + "/compressed"
+        self.compressed_pub = self.create_publisher(
+            CompressedImage, compressed_topic, 10)
+
+        self.camera_info_pub = self.create_publisher(
+            CameraInfo, camera_info_topic, 10)
+
+        # ── Camera info template ─────────────────────────────────────────────
         camera_info_path = str(self.get_parameter("camera_info_path").value).strip()
         if camera_info_path:
             path = Path(camera_info_path).expanduser()
@@ -128,8 +139,10 @@ class Imx219CalibrationPublisher(Node):
             1.0 / max(1.0, publish_rate_hz), self._publish_frame)
 
         self.get_logger().info(
-            f"Publishing IMX219 frames on {image_topic} "
-            f"and camera info on {camera_info_topic}"
+            f"Publishing IMX219 frames:\n"
+            f"  raw        → {image_topic}\n"
+            f"  compressed → {compressed_topic}  (JPEG q={self._jpeg_quality})\n"
+            f"  camera info→ {camera_info_topic}"
         )
 
     # -----------------------------------------------------------------------
@@ -139,7 +152,7 @@ class Imx219CalibrationPublisher(Node):
     def _camera_reader(self) -> None:
         """Continuously drain frames from GStreamer as fast as they arrive."""
         while not self._stop_event.is_set():
-            ok, frame = self.cap.read()   # blocks here, not in the timer
+            ok, frame = self.cap.read()
             if not ok:
                 self.get_logger().warning(
                     "Failed to read frame from IMX219", throttle_duration_sec=2.0)
@@ -149,17 +162,33 @@ class Imx219CalibrationPublisher(Node):
                 self._frame_ready  = True
 
     # -----------------------------------------------------------------------
-    # ROS timer callback — just grabs latest frame and publishes
+    # ROS timer callback
     # -----------------------------------------------------------------------
 
     def _publish_frame(self) -> None:
         with self._frame_lock:
             if not self._frame_ready:
-                return                     # camera not ready yet, skip tick
-            frame = self._latest_frame     # numpy arrays are reference-counted
+                return
+            frame = self._latest_frame
 
         stamp = self.get_clock().now().to_msg()
+
+        # ── Raw image (for camera_calibration / intrinsics workflow) ─────────
         image_msg = numpy_to_image_msg(frame, stamp, self.frame_id, "bgr8")
+        self.image_pub.publish(image_msg)
+
+        # ── Compressed image (for Kalibr bag recording) ──────────────────────
+        ok, jpeg_buf = cv2.imencode(
+            '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality])
+        if ok:
+            compressed_msg = CompressedImage()
+            compressed_msg.header.stamp    = stamp
+            compressed_msg.header.frame_id = self.frame_id
+            compressed_msg.format          = "jpeg"
+            compressed_msg.data            = jpeg_buf.tobytes()
+            self.compressed_pub.publish(compressed_msg)
+
+        # ── Camera info (shared stamp for both image topics) ─────────────────
         camera_info_msg = clone_camera_info(
             self.camera_info_template,
             stamp,
@@ -167,7 +196,6 @@ class Imx219CalibrationPublisher(Node):
             int(frame.shape[1]),
             int(frame.shape[0]),
         )
-        self.image_pub.publish(image_msg)
         self.camera_info_pub.publish(camera_info_msg)
 
     # -----------------------------------------------------------------------
