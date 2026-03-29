@@ -14,7 +14,7 @@ from std_msgs.msg import Float32MultiArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 # Math utilities
-from pose_utils import distance_poses, compute_tracking_pose
+from pose_utils import distance_poses, compute_tracking_pose, xy_distance
 
 # Local modules
 from constants import (
@@ -26,7 +26,7 @@ from constants import (
     LAND_SERVICE_NAME, LAUNCH_SERVICE_NAME, ABORT_SERVICE_NAME, TEST_SERVICE_NAME,
     MAVROS_STATE_TOPIC_NAME, MAVROS_SETPOINT_TOPIC_NAME, MAVROS_VISION_POSE_TOPIC_NAME,
     QOS_DEPTH, OFFBOARD_MODE, ALTITUDE_MODE,
-    TARGET_STANDOFF_RADIUS, TARGET_HOVER_ABOVE,
+    TARGET_STANDOFF_RADIUS, TARGET_HOVER_ABOVE, MAX_TRACKING_DISTANCE,
     DEBUG_VISION_DIVERGENCE,
     DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME,
     DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME,
@@ -78,9 +78,6 @@ class CommNode(HandlersMixin, Node):
         self.abort_requested        = False   # immediate: land in place
         self.manual_override_requested  = False
         self.emergency_stop_requested   = False
-        
-        ## Vision Tracking
-        self.last_tracking_pose = None
 
         ### MAVROS tracking
         self.current_mavros_state   = State()
@@ -205,17 +202,25 @@ class CommNode(HandlersMixin, Node):
         elif state == MissionState.TRACKING_TARGET:
             target = self.target_state.get_pose()
             if target is not None:
+                # Safety check: ignore targets that are implausibly far away in x/y.
+                # This guards against erroneous CV detections sending the drone off.
+                if xy_distance(self.vision_state.current_vision_pose, target) > MAX_TRACKING_DISTANCE:
+                    self.get_logger().warn(
+                        f'[TRACKING] Target rejected — x/y distance exceeds '
+                        f'MAX_TRACKING_DISTANCE ({MAX_TRACKING_DISTANCE} m). '
+                        f'Holding current setpoint.'
+                    )
+                    return self.vision_state.current_vision_pose
+
                 tracking_pose = compute_tracking_pose(
                     self.vision_state.current_vision_pose,
                     target,
-                    self.last_tracking_pose,
                     TARGET_STANDOFF_RADIUS,
                     TARGET_HOVER_ABOVE,
                 )
-                self.last_tracking_pose = tracking_pose
                 return tracking_pose
             else:
-                self.last_tracking_pose = None
+                pass  # fall through to default hover
 
         elif state == MissionState.GOING_HOME:
             return self.vision_state.get_init_hover_pose()

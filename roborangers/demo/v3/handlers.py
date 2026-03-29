@@ -3,7 +3,8 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from std_srvs.srv import Trigger
 
-from pose_utils import transform_realsense_pose_to_vicon_frame
+from pose_utils import transform_realsense_pose_to_vicon_frame, transform_cv_target_to_world_frame
+from constants import TargetType, CURRENT_TARGET_TYPE
 
 ###############################################
 #               H A N D L E R S               #
@@ -99,7 +100,17 @@ class HandlersMixin:
     # ------------------------------------------------------------------
 
     def handle_target_pose(self, msg: PoseStamped) -> None:
-        self.target_state.update(msg)
+        if CURRENT_TARGET_TYPE is TargetType.COMPUTER_VISION:
+            # The CV pipeline publishes in the left-fisheye camera frame.
+            # Transform into the global world frame before handing to TargetState.
+            world_pose = transform_cv_target_to_world_frame(
+                msg,
+                self.vision_state.current_vision_pose,
+            )
+            self.target_state.update(world_pose)
+        else:
+            # VICON: pose is already in the global frame — forward unchanged.
+            self.target_state.update(msg)
 
     # ------------------------------------------------------------------
     # MAVROS state handler

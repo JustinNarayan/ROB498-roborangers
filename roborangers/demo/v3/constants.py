@@ -10,6 +10,18 @@ class MissionType(Enum):
     REALSENSE_WITH_FALLBACK = auto()  # Realsense primary, fault to Vicon on divergence
 
 CURRENT_MISSION = MissionType.VICON
+
+###############################################
+#        T A R G E T   S O U R C E            #
+###############################################
+
+class TargetType(Enum):
+    VICON           = auto()  # Target pose is already in the global Vicon/world frame
+    COMPUTER_VISION = auto()  # Target pose is in the left-fisheye camera frame and must be transformed
+
+# Set to VICON when using forward_vicon_target_pose.py.
+# Set to COMPUTER_VISION when using a CV pipeline that publishes in the camera frame.
+CURRENT_TARGET_TYPE = TargetType.VICON
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
 MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
 
@@ -62,6 +74,10 @@ TARGET_HOVER_ABOVE = 0.5 # m
 
 # Desired standoff radius in the x/y plane from the target object centre (m)
 TARGET_STANDOFF_RADIUS = 0.4 # m
+
+# Maximum allowed x/y distance (m) from the drone to the target before tracking is refused.
+# Prevents erroneous CV detections from sending the drone far away.
+MAX_TRACKING_DISTANCE = 2.0  # m
 
 # Rate at which the target pose simulator publishes (Hz)
 TARGET_SIM_PUBLISH_RATE = 2  # Hz

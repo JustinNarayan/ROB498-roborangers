@@ -1,5 +1,5 @@
 from geometry_msgs.msg import PoseStamped, Pose
-from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_multiply, quaternion_conjugate
+from tf_transformations import euler_from_quaternion, quaternion_from_euler, quaternion_multiply, quaternion_conjugate, quaternion_from_matrix
 import numpy as np
 
 ###############################################
@@ -255,24 +255,157 @@ def is_valid_target_pose(pose: PoseStamped) -> bool:
     )
     return not all_zero
 
+
+def transform_cv_target_to_world_frame(
+    target_pose_camera: PoseStamped,
+    drone_pose: PoseStamped,
+) -> PoseStamped:
+    """
+    Transform a target pose expressed in the left-fisheye camera frame into
+    the global Vicon/world frame, given the drone's current world-frame pose.
+
+    Camera-to-drone body offset (in the drone's body frame):
+        translation : +0.23 m along body-X, +0.05 m along body-Y, -0.12 m along body-Z
+        rotation    : -45 deg about body-Y  (camera tilted downward)
+
+    Camera frame convention (fisheye):
+        Z = forward (optical axis)
+        X = left
+        Y = up
+
+    Steps:
+        1. Build the rigid transform from camera frame -> drone body frame.
+        2. Apply the drone's world-frame pose to get camera frame -> world frame.
+        3. Express the target position in the world frame.
+    """
+    # ---- 1. CV -> Drone Rotation ----------------------------------------
+
+    # Rotation: -45 deg about body-Y
+    q_cam_to_drone = quaternion_from_euler(0.0, -np.pi / 4, 0.0)
+    
+    # Rotation: From cam to fisheye
+    # The camera frame is as follows:
+    # cam-X = left (body +Y)
+    # cam-Y = up (body +Z)
+    # cam-Z = forward (body +X)
+    R_cv_to_cam = np.array([
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ])
+    T_cv_to_cam = np.eye(4)
+    T_cv_to_cam[:3, :3] = R_cv_to_cam
+    q_cv_to_cam = quaternion_from_matrix(T_cv_to_cam)
+    
+    # Full rotation: Take pose in CV frame and convert to Vicon frame
+    # Not yet accounting for offset of CV origin from Drone origin in Vicon frame
+    q_cv_to_drone = quaternion_multiply(q_cam_to_drone, q_cv_to_cam)
+
+    # Translation from drone origin to camera origin
+    t_cam_in_drone = np.array([0.23, 0.05, -0.12])
+
+    # ---- 2. Drone body -> world frame (from drone_pose) -----------------
+
+    q_drone_to_world = np.array([
+        drone_pose.pose.orientation.x,
+        drone_pose.pose.orientation.y,
+        drone_pose.pose.orientation.z,
+        drone_pose.pose.orientation.w,
+    ])
+
+    t_drone_in_world = np.array([
+        drone_pose.pose.position.x,
+        drone_pose.pose.position.y,
+        drone_pose.pose.position.z,
+    ])
+
+    # Rotate camera offset into world frame
+    def rotate_vector_by_quaternion(v, q):
+        """Rotate vector v by quaternion q (active rotation)."""
+        q_vec = np.array([v[0], v[1], v[2], 0.0])
+        q_conj = quaternion_conjugate(q)
+        rotated = quaternion_multiply(quaternion_multiply(q, q_vec), q_conj)
+        return rotated[:3]
+
+    t_drone_to_cam_in_world = rotate_vector_by_quaternion(t_cam_in_drone, q_drone_to_world)
+
+    # World position of the camera origin
+    t_cam_in_world = t_drone_in_world + t_drone_to_cam_in_world
+
+    # ---- 3. Target position in world frame ------------------------------
+
+    target_in_cam = np.array([
+        target_pose_camera.pose.position.x,
+        target_pose_camera.pose.position.y,
+        target_pose_camera.pose.position.z,
+    ])
+
+    # Rotation: camera -> world = body->world composed with camera->body
+    q_cam_to_world = quaternion_multiply(q_drone_to_world, q_cv_to_drone)
+
+    target_in_world = t_cam_in_world + rotate_vector_by_quaternion(target_in_cam, q_cam_to_world)
+
+    # ---- 4. Build output PoseStamped ------------------------------------
+
+    result = PoseStamped()
+    result.header = target_pose_camera.header
+    result.pose.position.x = float(target_in_world[0])
+    result.pose.position.y = float(target_in_world[1])
+    result.pose.position.z = float(target_in_world[2])
+
+    # Target orientation in world frame (transform the camera-frame orientation)
+    q_target_cam = np.array([
+        target_pose_camera.pose.orientation.x,
+        target_pose_camera.pose.orientation.y,
+        target_pose_camera.pose.orientation.z,
+        target_pose_camera.pose.orientation.w,
+    ])
+    q_target_world = quaternion_multiply(q_cam_to_world, q_target_cam)
+    result.pose.orientation.x = float(q_target_world[0])
+    result.pose.orientation.y = float(q_target_world[1])
+    result.pose.orientation.z = float(q_target_world[2])
+    result.pose.orientation.w = float(q_target_world[3])
+
+    return result
+
+
+def xy_distance(pose_a: PoseStamped, pose_b: PoseStamped) -> float:
+    """
+    Euclidean distance between two poses in the x/y plane only (ignores z).
+    Used for MAX_TRACKING_DISTANCE enforcement.
+    """
+    dx = pose_a.pose.position.x - pose_b.pose.position.x
+    dy = pose_a.pose.position.y - pose_b.pose.position.y
+    return np.sqrt(dx ** 2 + dy ** 2)
+
+
 def compute_tracking_pose(
     drone_pose: PoseStamped,
     target_pose: PoseStamped,
-    last_target_pose: PoseStamped,
     standoff_radius: float,
     hover_above: float,
 ) -> PoseStamped:
     """
-    Given the drone's current pose and the target object's pose (both in the
-    Vicon/world frame), compute a setpoint for the drone such that:
+    Compute a stable setpoint for the drone to observe the target object.
 
-      a) The drone is `hover_above` metres above the target.
-      b) The drone is `standoff_radius` metres away from the target in the x/y plane.
-      c) The drone directly faces the target.
+    Desired geometry
+    ----------------
+    The drone should eventually sit on a horizontal circle of radius
+    `standoff_radius` centred directly above the target at height
+    ``target.z + hover_above``, facing the target.
 
-    Strategy: find the closest point on the standoff circle (radius =
-    `standoff_radius`, centred on the target, at height target.z + hover_above)
-    to the drone's current x/y position.
+    Stability behaviour
+    -------------------
+    The drone approaches the closest point on the standoff circle while it is
+    outside that circle.  Once it reaches the circle (xy distance from target
+    <= standoff_radius) the *position* setpoint is frozen — only the yaw
+    (facing direction) is updated to keep the drone pointed at the moving
+    target.  This prevents the erratic setpoint-hopping that occurs when a
+    small target movement shifts the "closest circle point" discontinuously.
+
+    The position setpoint is only updated while the drone is clearly outside
+    the standoff radius, so minor target wobbles never trigger a repositioning
+    manoeuvre.
     """
     tx = target_pose.pose.position.x
     ty = target_pose.pose.position.y
@@ -280,32 +413,30 @@ def compute_tracking_pose(
 
     dx = drone_pose.pose.position.x - tx
     dy = drone_pose.pose.position.y - ty
+    dist_xy = np.sqrt(dx ** 2 + dy ** 2)
 
-    dist_xy = np.sqrt(dx**2 + dy**2)
-
-    if dist_xy < 1e-6:
-        # Drone is directly above the target — pick an arbitrary direction
-        angle_to_drone = 0.0
+    if dist_xy <= standoff_radius:
+        # ----------------------------------------------------------------
+        # ON OR INSIDE the circle — hold current x/y position, only update
+        # yaw so the drone keeps facing the target as it moves.
+        # ----------------------------------------------------------------
+        setpoint_x = drone_pose.pose.position.x
+        setpoint_y = drone_pose.pose.position.y
+        setpoint_z = tz + hover_above
     else:
+        # ----------------------------------------------------------------
+        # OUTSIDE the circle — approach the nearest point on the circle.
+        # ----------------------------------------------------------------
         angle_to_drone = np.arctan2(dy, dx)
-
-    if (dist_xy < standoff_radius) and (last_target_pose is not None):
-        # Already around drone, remain in position   
-        setpoint_x = last_target_pose.pose.position.x 
-        setpoint_y = last_target_pose.pose.position.y
-        setpoint_z = last_target_pose.pose.position.z 
-    else:
-        # Closest point on the standoff circle
         setpoint_x = tx + standoff_radius * np.cos(angle_to_drone)
         setpoint_y = ty + standoff_radius * np.sin(angle_to_drone)
         setpoint_z = tz + hover_above
 
-    # Yaw so the drone faces the target (i.e. points from setpoint toward target)
+    # Yaw so the drone always faces the target
     yaw_to_target = np.arctan2(ty - setpoint_y, tx - setpoint_x)
 
     tracking_pose = PoseStamped()
     tracking_pose.header.frame_id = 'map'
-
     tracking_pose.pose.position.x = setpoint_x
     tracking_pose.pose.position.y = setpoint_y
     tracking_pose.pose.position.z = setpoint_z
