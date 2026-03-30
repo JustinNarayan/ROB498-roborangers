@@ -2,6 +2,7 @@
 
 import math
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -193,59 +194,91 @@ class CameraPoseDepthForward(Node):
             self._frame_data['ts'] = msg.header.stamp
 
     def _configure_stereo(self, *, K_left, D_left, K_right, D_right, width, height, R, T, source):
-        (R_left, R_right, P_left, P_right, Q) = cv2.fisheye.stereoRectify(
-            K1=K_left, D1=D_left,
-            K2=K_right, D2=D_right,
-            imageSize=(width, height),
-            R=R, tvec=T,
-            flags=cv2.CALIB_ZERO_DISPARITY,
-            newImageSize=(width, height),
-            balance=0, fov_scale=1.0,
-        )[0:5]
+        # Downscale for performance (matching working reference)
+        scale = 0.5
 
-        P_left[0][2] = P_right[0][2] = width / 2
-        P_left[1][2] = P_right[1][2] = height / 2
+        # --- Manual half-rotation split (avoiding buggy cv2.fisheye.stereoRectify) ---
+        # Split the inter-camera rotation evenly so both cameras rotate
+        # towards a common virtual fronto-parallel plane.
+        rvec, _ = cv2.Rodrigues(R)
+        R1, _ = cv2.Rodrigues(rvec / 2.0)
+        R2, _ = cv2.Rodrigues(-rvec / 2.0)
+
+        # Scaled intrinsics for the downscaled output images.
+        # Using the original K (scaled) as the new camera matrix preserves
+        # the real focal length and principal point.
+        K_left_scaled = K_left.copy()
+        K_left_scaled[0, 0] *= scale
+        K_left_scaled[1, 1] *= scale
+        K_left_scaled[0, 2] *= scale
+        K_left_scaled[1, 2] *= scale
+
+        K_right_scaled = K_right.copy()
+        K_right_scaled[0, 0] *= scale
+        K_right_scaled[1, 1] *= scale
+        K_right_scaled[0, 2] *= scale
+        K_right_scaled[1, 2] *= scale
+
+        scaled_size = (int(width * scale), int(height * scale))
 
         m1type = cv2.CV_32FC1
         lm1, lm2 = cv2.fisheye.initUndistortRectifyMap(
-            K_left, D_left, R_left, P_left, (width, height), m1type)
+            K_left, D_left, R1, K_left_scaled, scaled_size, m1type)
         rm1, rm2 = cv2.fisheye.initUndistortRectifyMap(
-            K_right, D_right, R_right, P_right, (width, height), m1type)
+            K_right, D_right, R2, K_right_scaled, scaled_size, m1type)
         self._undistort_rectify = {'left': (lm1, lm2), 'right': (rm1, rm2)}
 
-        half = int((height / 3) / 2)
-        rs_row = int(height / 2 - half)
-        re_row = int(height / 2 + half)
-        cs_col = int(width / 2 - half)
-        ce_col = int(width / 2 + half)
-        Q[0][3] = Q[1][3] = -half
-
-        min_disp = 0
-        num_disp = 112
-        max_disp = min_disp + num_disp
-        cs_offset = min(max_disp, cs_col)
-        cs_col -= cs_offset
-
-        self._crop = (rs_row, re_row, cs_col, ce_col, cs_offset)
-        self._Q = Q
-        self._focal_len = float(Q[2][3])
+        self._focal_len = float(K_left_scaled[0, 0])
         self._baseline = float(abs(T[0]))
-        self._P_left = P_left
-        self._min_disp = min_disp
-        self._num_disp = num_disp
+        self._scaled_size = scaled_size
 
-        ws = 3
+        # Vertical offset correction for slight camera misalignment
+        self._warp_M = np.float32([[1, 0, 0], [0, 1, -2]])
+
+        # Disparity bounds from depth range
+        min_depth = 0.1
+        max_depth = 5.0
+        self._min_disp = float(self._focal_len * self._baseline / max_depth)
+        self._max_disp = float(self._focal_len * self._baseline / min_depth)
+
+        # CLAHE for contrast-boosting low-texture fisheye images
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        # SGBM parameters (matched to working reference)
+        num_disp = 64
+        block_size = 5
         self._stereo = cv2.StereoSGBM_create(
-            minDisparity=min_disp,
+            minDisparity=0,
             numDisparities=num_disp,
-            blockSize=16,
-            P1=8 * 3 * ws ** 2,
-            P2=32 * 3 * ws ** 2,
+            blockSize=block_size,
+            P1=8 * 3 * block_size ** 2,
+            P2=32 * 3 * block_size ** 2,
             disp12MaxDiff=1,
-            uniquenessRatio=10,
-            speckleWindowSize=100,
-            speckleRange=32,
+            uniquenessRatio=5,
+            speckleWindowSize=25,
+            speckleRange=2,
+            preFilterCap=63,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         )
+
+        # WLS post-filter to fill black splotches from failed SGBM matches
+        self._right_matcher = cv2.ximgproc.createRightMatcher(self._stereo)
+        self._wls_filter = cv2.ximgproc.createDisparityWLSFilter(self._stereo)
+        self._wls_filter.setLambda(8000)
+        self._wls_filter.setSigmaColor(1.5)
+
+        # Mask out the IMX camera body mounted between the fisheye lenses.
+        # It sits at roughly the image centre on both rectified views and
+        # creates false matches.  Black-out a small rectangle there.
+        # Coordinates are in the downscaled frame (424×400 at scale=0.5).
+        sw, sh = scaled_size
+        self._imx_mask = np.ones((sh, sw), dtype=np.uint8) * 255
+        mask_hw, mask_hh = int(sw * 0.06), int(sh * 0.08)  # half-widths
+        cx_mask, cy_mask = sw // 2, sh // 2
+        self._imx_mask[
+            cy_mask - mask_hh : cy_mask + mask_hh,
+            cx_mask - mask_hw : cx_mask + mask_hw,
+        ] = 0
 
         if self._depth_thread is None:
             self._depth_thread = threading.Thread(target=self._depth_worker, daemon=True)
@@ -254,11 +287,9 @@ class CameraPoseDepthForward(Node):
         self._stereo_ready = True
         self._depth_enabled = True
 
-        fov_h = 2 * math.atan((ce_col - cs_col) / self._focal_len / 2) * 180 / math.pi
-        fov_v = 2 * math.atan((re_row - rs_row) / self._focal_len / 2) * 180 / math.pi
         self.get_logger().info(
             f'Stereo depth ready from {source} | baseline={self._baseline*100:.1f} cm | '
-            f'FOV {fov_h:.0f}°W × {fov_v:.0f}°H (centre crop only)')
+            f'focal={self._focal_len:.1f}px | output={scaled_size[0]}x{scaled_size[1]}')
 
     # Background depth worker  (continuous; daemon so it exits with the node)
 
@@ -266,35 +297,59 @@ class CameraPoseDepthForward(Node):
     def _depth_worker(self):
         while rclpy.ok():
             if not self._stereo_ready:
+                time.sleep(0.05)
                 continue
 
-            rs_row, re_row, cs_col, ce_col, cs_offset = self._crop
             with self._frame_mutex:
                 if self._frame_data['left'] is None or self._frame_data['right'] is None:
+                    time.sleep(0.01)
                     continue
                 left = self._frame_data['left'].copy()
                 right = self._frame_data['right'].copy()
 
-            # Undistort + rectify
+            # Undistort + rectify + downscale (all in one remap)
             lm1, lm2 = self._undistort_rectify["left"]
             rm1, rm2 = self._undistort_rectify["right"]
-            left_r  = cv2.remap(left,  lm1, lm2, cv2.INTER_LINEAR)[rs_row:re_row, cs_col:ce_col]
-            right_r = cv2.remap(right, rm1, rm2, cv2.INTER_LINEAR)[rs_row:re_row, cs_col:ce_col]
+            left_r  = cv2.remap(left,  lm1, lm2, cv2.INTER_LINEAR)
+            right_r = cv2.remap(right, rm1, rm2, cv2.INTER_LINEAR)
 
-            # Disparity (SGBM fixed-point → divide by 16)
-            disp = self._stereo.compute(left_r, right_r).astype(np.float32) / 16.0
-            disp = disp[:, cs_offset:]   # trim invalid left-edge columns
+            # Vertical alignment correction
+            right_r = cv2.warpAffine(
+                right_r, self._warp_M,
+                (right_r.shape[1], right_r.shape[0]))
+
+            # Boost contrast on low-texture fisheye images
+            left_r  = self._clahe.apply(left_r)
+            right_r = self._clahe.apply(right_r)
+
+            # Black out IMX camera body in both views so SGBM ignores it
+            left_r  = cv2.bitwise_and(left_r, self._imx_mask)
+            right_r = cv2.bitwise_and(right_r, self._imx_mask)
+
+            # Disparity: left→right and right→left for WLS hole-filling
+            disp_left  = self._stereo.compute(left_r, right_r)
+            disp_right = self._right_matcher.compute(right_r, left_r)
+
+            # WLS filter fills black splotches from failed SGBM matches
+            disp_filtered = self._wls_filter.filter(
+                disp_left, left_r, disparity_map_right=disp_right)
+
+            disp = disp_filtered.astype(np.float32) / 16.0
+
+            # Zero out invalid disparities (outside useful depth range)
+            disp = np.where(
+                (disp > self._min_disp) & (disp < self._max_disp),
+                disp, 0.0)
 
             # depth = f * b / disparity   (metres)
             with np.errstate(divide='ignore', invalid='ignore'):
                 depth = np.where(
-                    disp > self._min_disp,
+                    disp > 0,
                     self._focal_len * self._baseline / disp,
                     0.0).astype(np.float32)
 
             with self._depth_lock:
                 self._depth_map = depth
-                #self.pub_depth_map.publish(self._depth_map)
 
                 depth_msg = self._numpy_to_image_msg(depth)
                 self.pub_depth_map.publish(depth_msg)
@@ -302,15 +357,11 @@ class CameraPoseDepthForward(Node):
 
     def get_depth_at_pixel(self, u: int, v: int) -> Optional[float]:
         """
-        Returns depth in metres at pixel (u, v) of the rectified centre-crop
-        image, or None if the depth map is not yet available / pixel invalid.
+        Returns depth in metres at pixel (u, v) of the rectified depth map,
+        or None if the depth map is not yet available / pixel invalid.
 
-        Coordinate origin (0, 0) is the top-left of the centre crop.
-        The crop covers roughly the central 1/3 of the full fisheye frame,
-        which is the most reliable region for passive stereo.
-
-        Depth is measured along the optical axis (Z) of the rectified left
-        camera, which is co-aligned with the T265 body/pose frame Z axis.
+        Coordinate origin (0, 0) is the top-left of the downscaled
+        rectified image (half the original fisheye resolution).
         """
         with self._depth_lock:
             if self._depth_map is None:
