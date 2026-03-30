@@ -15,6 +15,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Header
 
 def ros_camera_matrix(camera_info: CameraInfo):
     return np.array(camera_info.k, dtype=np.float64).reshape(3, 3)
@@ -62,6 +63,10 @@ class CameraPoseDepthForward(Node):
 
         self.pub_mavros_setpoint = self.create_publisher(
             PoseStamped, '/mavros/setpoint_position/local', 20)
+
+        self.pub_depth_map = self.create_publisher(
+            Image, 'mavros/vision_pose/depth_map', 10
+        )
             
         # ── Shared depth state ──────────────────────────────────────────────
         self._depth_lock   = threading.Lock()
@@ -89,6 +94,19 @@ class CameraPoseDepthForward(Node):
     # -----------------------------------------------------------------------
     # ROS fisheye setup
     # -----------------------------------------------------------------------
+
+    # helper function for depth visualization
+    def _numpy_to_image_msg(self, depth: np.ndarray) -> Image:
+        msg = Image()
+        msg.header = Header()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'camera_fisheye1_optical_frame'
+        msg.height, msg.width = depth.shape
+        msg.encoding = '32FC1'          # float32 single-channel
+        msg.is_bigendian = False
+        msg.step = msg.width * 4        # 4 bytes per float32
+        msg.data = depth.tobytes()
+        return msg
 
     def _setup_ros_fisheye_subscribers(self, qos):
         extrinsics = self._load_ros_extrinsics()
@@ -276,6 +294,10 @@ class CameraPoseDepthForward(Node):
 
             with self._depth_lock:
                 self._depth_map = depth
+                #self.pub_depth_map.publish(self._depth_map)
+
+                depth_msg = self._numpy_to_image_msg(depth)
+                self.pub_depth_map.publish(depth_msg)
 
 
     def get_depth_at_pixel(self, u: int, v: int) -> Optional[float]:
