@@ -16,12 +16,6 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def ros_camera_matrix(camera_info: CameraInfo):
     return np.array(camera_info.k, dtype=np.float64).reshape(3, 3)
 
@@ -46,11 +40,6 @@ def invert_extrinsics(R, T):
     R_inv = R.T
     T_inv = -R_inv @ T
     return R_inv, T_inv
-
-
-# ---------------------------------------------------------------------------
-# ROS2 Node
-# ---------------------------------------------------------------------------
 
 class CameraPoseDepthForward(Node):
 
@@ -253,9 +242,8 @@ class CameraPoseDepthForward(Node):
             f'Stereo depth ready from {source} | baseline={self._baseline*100:.1f} cm | '
             f'FOV {fov_h:.0f}°W × {fov_v:.0f}°H (centre crop only)')
 
-    # -----------------------------------------------------------------------
     # Background depth worker  (continuous; daemon so it exits with the node)
-    # -----------------------------------------------------------------------
+
 
     def _depth_worker(self):
         while rclpy.ok():
@@ -289,9 +277,6 @@ class CameraPoseDepthForward(Node):
             with self._depth_lock:
                 self._depth_map = depth
 
-    # -----------------------------------------------------------------------
-    # Public API: get depth at an (u, v) pixel in the rectified centre crop
-    # -----------------------------------------------------------------------
 
     def get_depth_at_pixel(self, u: int, v: int) -> Optional[float]:
         """
