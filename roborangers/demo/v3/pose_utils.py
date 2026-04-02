@@ -445,3 +445,116 @@ def compute_tracking_pose(
     tracking_pose.pose.orientation.w = q[3]
 
     return tracking_pose
+
+
+def compute_overhead_pose(
+    target_pose: PoseStamped,
+    hover_above: float,
+    net_offset_x: float,
+    net_offset_y: float,
+    current_drone_yaw: float,
+) -> PoseStamped:
+    """
+    Compute the drone setpoint required to place the capture net directly
+    above the target in x/y.
+
+    The net is mounted at a fixed offset from the drone origin in the drone's
+    body frame (net_offset_x forward, net_offset_y left).  To put the net
+    over the target the drone origin must be displaced *opposite* to that
+    offset after rotating the offset into the world frame using the drone's
+    current yaw.
+
+    Orientation policy
+    ------------------
+    The drone keeps its current yaw (passed in as `current_drone_yaw`) so it
+    stays as straight as possible, only yawing again if /overhead is called a
+    second time (which toggles back to SURVEYING).  Roll and pitch remain zero
+    (flat hover).
+
+    Parameters
+    ----------
+    target_pose       : world-frame pose of the target (only x/y/z used)
+    hover_above       : desired clearance above the target in z (m)
+    net_offset_x      : net offset along drone body +X (m)
+    net_offset_y      : net offset along drone body +Y (m)
+    current_drone_yaw : drone's current heading (radians, world frame)
+
+    Returns
+    -------
+    PoseStamped with the drone origin setpoint that places the net overhead.
+    """
+    tx = target_pose.pose.position.x
+    ty = target_pose.pose.position.y
+    tz = target_pose.pose.position.z
+
+    # Rotate net offset from body frame into world frame using current yaw
+    cos_y = np.cos(current_drone_yaw)
+    sin_y = np.sin(current_drone_yaw)
+    net_world_x = cos_y * net_offset_x - sin_y * net_offset_y
+    net_world_y = sin_y * net_offset_x + cos_y * net_offset_y
+
+    # The drone origin must be shifted opposite so that the net lands on target
+    drone_setpoint_x = tx - net_world_x
+    drone_setpoint_y = ty - net_world_y
+    drone_setpoint_z = tz + hover_above
+
+    overhead_pose = PoseStamped()
+    overhead_pose.header.frame_id = 'map'
+    overhead_pose.pose.position.x = drone_setpoint_x
+    overhead_pose.pose.position.y = drone_setpoint_y
+    overhead_pose.pose.position.z = drone_setpoint_z
+
+    # Keep the drone's current heading (flat hover, no extra rotation)
+    q = quaternion_from_euler(0.0, 0.0, current_drone_yaw)
+    overhead_pose.pose.orientation.x = q[0]
+    overhead_pose.pose.orientation.y = q[1]
+    overhead_pose.pose.orientation.z = q[2]
+    overhead_pose.pose.orientation.w = q[3]
+
+    return overhead_pose
+
+
+def rotate_only_tracking_pose(
+    home_pose: PoseStamped,
+    target_pose: PoseStamped,
+    hover_above: float,
+) -> PoseStamped:
+    """
+    Rotate-only tracking setpoint: hold the drone at the home hover position
+    but rotate it in yaw to face the detected target.
+
+    Used when TRACKING_MOVE_TO_TRACK is False, so the drone can visually
+    verify CV detections without moving to chase them.
+
+    Parameters
+    ----------
+    home_pose   : the drone's init hover pose (positional anchor)
+    target_pose : world-frame pose of the detected target
+    hover_above : z-offset above the init position (matches normal hover)
+
+    Returns
+    -------
+    PoseStamped at the home x/y/z with yaw pointing toward the target.
+    """
+    hx = home_pose.pose.position.x
+    hy = home_pose.pose.position.y
+    hz = home_pose.pose.position.z + hover_above
+
+    tx = target_pose.pose.position.x
+    ty = target_pose.pose.position.y
+
+    yaw_to_target = np.arctan2(ty - hy, tx - hx)
+
+    result = PoseStamped()
+    result.header.frame_id = 'map'
+    result.pose.position.x = hx
+    result.pose.position.y = hy
+    result.pose.position.z = hz
+
+    q = quaternion_from_euler(0.0, 0.0, yaw_to_target)
+    result.pose.orientation.x = q[0]
+    result.pose.orientation.y = q[1]
+    result.pose.orientation.z = q[2]
+    result.pose.orientation.w = q[3]
+
+    return result

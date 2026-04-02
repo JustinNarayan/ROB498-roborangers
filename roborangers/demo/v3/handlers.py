@@ -3,8 +3,12 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from std_srvs.srv import Trigger
 
-from pose_utils import transform_realsense_pose_to_vicon_frame, transform_cv_target_to_world_frame
-from constants import TargetType, CURRENT_TARGET_TYPE
+from pose_utils import transform_realsense_pose_to_vicon_frame, transform_cv_target_to_world_frame, xy_distance
+from constants import (
+    TargetType, CURRENT_TARGET_TYPE,
+    CV_VICON_POSITION_AGREEMENT_THRESHOLD,
+    MissionState,
+)
 
 ###############################################
 #               H A N D L E R S               #
@@ -68,6 +72,45 @@ class HandlersMixin:
         response.success = True
         return response
 
+    def handle_overhead(
+        self,
+        request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        """
+        Toggle the OVERHEAD state.
+
+        - If a valid target is currently known, the drone transitions to OVERHEAD
+          so it positions its capture net directly above the target x/y position.
+        - If already in OVERHEAD, this call toggles *back* to SURVEYING.
+        - If called when there is no valid target (and not already OVERHEAD),
+          the request is rejected with an explanatory message.
+        """
+        if self.mission_state == MissionState.OVERHEAD:
+            # Second call: return to survey mode
+            self.get_logger().info(
+                'Overhead Requested — already OVERHEAD, returning to SURVEYING.'
+            )
+            self.overhead_requested = True   # FSM will handle the toggle
+            response.success = True
+            response.message = 'Leaving OVERHEAD, returning to SURVEYING.'
+        elif self.target_state.has_valid_target():
+            self.get_logger().info('Overhead Requested — valid target found, entering OVERHEAD.')
+            self.overhead_requested = True
+            response.success = True
+            response.message = 'Entering OVERHEAD mode.'
+        else:
+            self.get_logger().warn(
+                'Overhead Requested — REJECTED: no valid target currently detected. '
+                'Ensure a target pose is being published and is not stale.'
+            )
+            response.success = False
+            response.message = (
+                'No valid target detected. '
+                'OVERHEAD mode requires an active, non-stale target pose.'
+            )
+        return response
+
     # ------------------------------------------------------------------
     # Vision pose handlers
     # ------------------------------------------------------------------
@@ -108,12 +151,73 @@ class HandlersMixin:
                 self.vision_state.current_vision_pose,
             )
             self.target_state.update(world_pose)
-            
-            ### LOG TARGET POSE
-            self.get_logger().info(f'tx: {world_pose.pose.position.x}, ty: {world_pose.pose.position.y}, tz: {world_pose.pose.position.z}')
+            self.get_logger().info(
+                f'tx: {world_pose.pose.position.x}, '
+                f'ty: {world_pose.pose.position.y}, '
+                f'tz: {world_pose.pose.position.z}'
+            )
+
+        elif CURRENT_TARGET_TYPE is TargetType.CV_WITH_VICON_VALIDATION:
+            # Transform CV detection from camera frame to world frame.
+            world_pose = transform_cv_target_to_world_frame(
+                msg,
+                self.vision_state.current_vision_pose,
+            )
+
+            # Cross-check against the latest Vicon reading for the RC car.
+            # If they disagree in x/y beyond the threshold, reject the frame.
+            vicon_target = self.target_state.get_latest_vicon_target()
+            if vicon_target is not None:
+                disagreement = xy_distance(world_pose, vicon_target)
+                if disagreement > CV_VICON_POSITION_AGREEMENT_THRESHOLD:
+                    self.get_logger().warn(
+                        f'[CV_VALIDATE] CV frame rejected — x/y disagreement with Vicon: '
+                        f'{disagreement:.3f} m (threshold {CV_VICON_POSITION_AGREEMENT_THRESHOLD} m). '
+                        f'CV: ({world_pose.pose.position.x:.2f}, {world_pose.pose.position.y:.2f}), '
+                        f'Vicon: ({vicon_target.pose.position.x:.2f}, {vicon_target.pose.position.y:.2f})'
+                    )
+                    # Do not update target_state — keep previous valid reading or let it go stale.
+                    return
+                else:
+                    self.get_logger().debug(
+                        f'[CV_VALIDATE] CV frame accepted — disagreement: {disagreement:.3f} m'
+                    )
+            else:
+                # No Vicon reference available yet; accept the CV frame unconditionally
+                # so the drone is not permanently blind at startup.
+                self.get_logger().warn(
+                    '[CV_VALIDATE] No Vicon target reference available — accepting CV frame unconditionally.'
+                )
+
+            self.target_state.update(world_pose)
+            self.get_logger().info(
+                f'[CV_VALIDATE] tx: {world_pose.pose.position.x:.2f}, '
+                f'ty: {world_pose.pose.position.y:.2f}, '
+                f'tz: {world_pose.pose.position.z:.2f}'
+            )
+
         else:
             # VICON: pose is already in the global frame — forward unchanged.
             self.target_state.update(msg)
+
+    # ------------------------------------------------------------------
+    # Vicon RC car target pose handler (used for CV validation reference)
+    # ------------------------------------------------------------------
+
+    def handle_vicon_target_pose(self, msg: PoseStamped) -> None:
+        """
+        Receives the raw Vicon pose of the RC car target object and stores it
+        in TargetState for use as a ground-truth reference when operating in
+        CV_WITH_VICON_VALIDATION mode.
+
+        This handler is only wired up when CURRENT_TARGET_TYPE is
+        CV_WITH_VICON_VALIDATION (see CommNode.__init__).
+        """
+        vicon_pose = PoseStamped()
+        vicon_pose.header.stamp    = msg.header.stamp
+        vicon_pose.header.frame_id = msg.header.frame_id
+        vicon_pose.pose            = msg.pose
+        self.target_state.update_vicon_reference(vicon_pose)
 
     # ------------------------------------------------------------------
     # MAVROS state handler

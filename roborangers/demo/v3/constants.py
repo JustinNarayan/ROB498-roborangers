@@ -18,12 +18,22 @@ CURRENT_MISSION = MissionType.VICON
 class TargetType(Enum):
     VICON           = auto()  # Target pose is already in the global Vicon/world frame
     COMPUTER_VISION = auto()  # Target pose is in the left-fisheye camera frame and must be transformed
+    CV_WITH_VICON_VALIDATION = auto()  # CV primary, but each CV frame is cross-checked against the
+                                       # corresponding Vicon RC car reading; frames that diverge too
+                                       # far in position are rejected rather than falling back to Vicon
 
 # Set to VICON when using forward_vicon_target_pose.py.
 # Set to COMPUTER_VISION when using a CV pipeline that publishes in the camera frame.
+# Set to CV_WITH_VICON_VALIDATION to sanity-check CV against Vicon without using Vicon as fallback.
 CURRENT_TARGET_TYPE = TargetType.VICON
+
+# Maximum x/y positional disagreement (m) between CV-derived world position and the
+# corresponding Vicon ground-truth reading before the CV frame is rejected.
+# Only used when CURRENT_TARGET_TYPE == TargetType.CV_WITH_VICON_VALIDATION.
+CV_VICON_POSITION_AGREEMENT_THRESHOLD = 0.3  # m
+
 PERMIT_MANUAL_OVERRIDE = True # for manual landing
-MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 10 # m
+MAX_EMERGENCY_LAND_DISTANCE_FROM_INIT = 3.0  # m  — beyond this the geo-fence triggers
 
 COMMAND_RATE = 50 # Hz
 SUCCESS_RADIUS = 0.3 # m
@@ -60,7 +70,7 @@ DEBUG_VISION_DIVERGENCE = True
 SURVEY_ANGULAR_STEP_RADIANS = 0.393  # ~22.5 degrees per step
 
 # How long the drone holds each angular step before advancing (nanoseconds)
-SURVEY_STEP_HOLD_TIME_NANOSECONDS = 2e9  # 5 second per step
+SURVEY_STEP_HOLD_TIME_NANOSECONDS = 2e9  # 2 seconds per step
 
 ###############################################
 #          T A R G E T   T R A C K I N G      #
@@ -83,6 +93,24 @@ MAX_TRACKING_DISTANCE = 2.0  # m
 # Rate at which the target pose simulator publishes (Hz)
 TARGET_SIM_PUBLISH_RATE = 2  # Hz
 
+# When True  — normal TRACKING_TARGET behaviour: drone moves to the standoff orbit around the target.
+# When False — rotate-only mode: the drone's positional setpoint stays fixed at the init hover
+#              pose and only the yaw is updated to face the detected target. Use this to sanity-
+#              check CV output before allowing it to command translational motion.
+TRACKING_MOVE_TO_TRACK = True
+
+###############################################
+#    N E T   F R A M E   O F F S E T          #
+###############################################
+
+# Static offset from the drone's origin (MAVROS/Vicon body frame) to the
+# centre of the capture net, expressed in the drone's local body frame (m).
+#   +X = drone forward, +Y = drone left, +Z = drone up
+# These offsets are applied in OVERHEAD mode so the *net* is positioned
+# directly above the target rather than the drone origin.
+NET_OFFSET_X = 0.10   # 10 cm forward along drone body +X
+NET_OFFSET_Y = 0.05   # 5  cm left   along drone body +Y
+
 ###############################################
 #              R O S   C O M M S              #
 ###############################################
@@ -95,10 +123,11 @@ VICON_TOPIC_NAME        = '/vicon/ROB498_Drone/ROB498_Drone'
 REALSENSE_TOPIC_NAME    = '/camera/pose/sample'
 TARGET_POSE_TOPIC_NAME  = f'{DRONE_ID}/target/pose'
 
-LAND_SERVICE_NAME   = f'{DRONE_ID}/comm/land'
-LAUNCH_SERVICE_NAME = f'{DRONE_ID}/comm/launch'
-ABORT_SERVICE_NAME  = f'{DRONE_ID}/comm/abort'
-TEST_SERVICE_NAME   = f'{DRONE_ID}/comm/test'
+LAND_SERVICE_NAME       = f'{DRONE_ID}/comm/land'
+LAUNCH_SERVICE_NAME     = f'{DRONE_ID}/comm/launch'
+ABORT_SERVICE_NAME      = f'{DRONE_ID}/comm/abort'
+TEST_SERVICE_NAME       = f'{DRONE_ID}/comm/test'
+OVERHEAD_SERVICE_NAME   = f'{DRONE_ID}/comm/overhead'
 
 DEBUG_VISION_DIVERGENCE_POSITION_TOPIC_NAME    = f'{DRONE_ID}/debug/vision_divergence/position'
 DEBUG_VISION_DIVERGENCE_ORIENTATION_TOPIC_NAME = f'{DRONE_ID}/debug/vision_divergence/orientation'
@@ -121,9 +150,11 @@ class MissionState(Enum):
     AWAITING_TEST   = 'AWAITING_TEST'   # Waiting for /test service call
     SURVEYING       = 'SURVEYING'       # Rotating in place, searching for target
     TRACKING_TARGET = 'TRACKING_TARGET' # Navigating to standoff pose around target
+    OVERHEAD        = 'OVERHEAD'        # Positioning net directly above the current target
     GOING_HOME      = 'GOING_HOME'      # Returning to init hover pose before landing
     LANDING         = 'LANDING'         # Executing MAVROS land command
     MANUAL_OVERRIDE = 'MANUAL_OVERRIDE' # Under manual RC control
+    GEO_FENCE_HOLD  = 'GEO_FENCE_HOLD' # Emergency: >MAX_EMERGENCY_LAND_DISTANCE from home; hover in place
 
 ###############################################
 #            V I S I O N   S T A T E          #
