@@ -12,7 +12,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 
-from roborangers.yolo.imx219_yolov8n_trt import (
+from roborangers.cv.yolo.imx219_yolov8n_trt import (
     camera_backend_diagnostic,
     opencv_has_gstreamer,
     YoloV8TRTDetector,
@@ -108,6 +108,12 @@ class CentroidDetectorNode(Node):
 
         publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         period_sec = 1.0 / max(1.0, publish_rate_hz)
+
+        self._frame_count = 0
+        self._detect_count = 0
+        self._lost_frames = 0
+        self._log_interval = max(1, int(publish_rate_hz))  # log every ~1 second
+
         self.timer = self.create_timer(period_sec, self._on_timer)
         self.get_logger().info("Centroid detector node started (TensorRT backend)")
 
@@ -137,7 +143,11 @@ class CentroidDetectorNode(Node):
             )
         elif self.target_class_name:
             self.get_logger().warn(
-                "target_class_name was set but class_names_path is empty; using top detection"
+                f"target_class_name '{self.target_class_name}' was set but class_names_path "
+                "is empty; using top detection. For a single-class custom model, use "
+                "'-p target_class_id:=0' instead of target_class_name, or create a "
+                "class_names.txt file (one class name per line) and pass it via "
+                "'-p class_names_path:=/path/to/class_names.txt'"
             )
         else:
             self.get_logger().info("No target class configured; using top detection")
@@ -157,9 +167,17 @@ class CentroidDetectorNode(Node):
         self.status_pub.publish(status)
 
     def _on_timer(self) -> None:
+        self._frame_count += 1
+        should_log = (self._frame_count % self._log_interval == 0)
+
         ok, frame = self.cap.read()
         if not ok:
+            self._lost_frames += 1
             self._publish_lost()
+            if should_log:
+                self.get_logger().warn(
+                    f"Camera read failed ({self._lost_frames}/{self._frame_count} frames lost)"
+                )
             return
 
         detections = self.detector.infer(frame)
@@ -167,12 +185,18 @@ class CentroidDetectorNode(Node):
 
         if target is None:
             self._publish_lost()
+            if should_log:
+                self.get_logger().info(
+                    f"No target detected (frame {self._frame_count}, "
+                    f"{len(detections)} raw detections)"
+                )
             if self.display:
                 vis = draw_detections(frame, detections, self.class_names)
                 cv2.imshow("centroid_detector", vis)
                 cv2.waitKey(1)
             return
 
+        self._detect_count += 1
         h, w = frame.shape[:2]
         cx, cy = target.centroid
         nx = (cx - (w / 2.0)) / (w / 2.0)
@@ -200,10 +224,12 @@ class CentroidDetectorNode(Node):
         status.data = "DETECTED"
         self.status_pub.publish(status)
 
-        self.get_logger().debug(
-            f"target cx={cx:.1f} cy={cy:.1f} nx={nx:.3f} ny={ny:.3f} "
-            f"conf={target.confidence:.3f}"
-        )
+        if should_log:
+            self.get_logger().info(
+                f"DETECTED cx={cx:.1f} cy={cy:.1f} nx={nx:.3f} ny={ny:.3f} "
+                f"conf={target.confidence:.3f} class={target.class_id} "
+                f"({self._detect_count}/{self._frame_count} frames with target)"
+            )
 
         if self.display:
             vis = draw_detections(frame, detections, self.class_names)

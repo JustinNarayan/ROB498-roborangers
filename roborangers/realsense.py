@@ -65,16 +65,18 @@ class CameraPoseDepthForward(Node):
         self.pub_mavros_setpoint = self.create_publisher(
             PoseStamped, '/mavros/setpoint_position/local', 20)
 
-        self.pub_depth_map = self.create_publisher(
-            Image, 'mavros/vision_pose/depth_map', 10
-        )
+        # self.pub_depth_map = self.create_publisher(
+        #     Image, 'mavros/vision_pose/depth_map', 10
+        # )
             
         # ── Shared depth state ──────────────────────────────────────────────
         self._depth_lock   = threading.Lock()
         self._depth_map    = None          # float32 array (cropped centre)
         self._frame_mutex  = threading.Lock()
         self._frame_data   = {"left": None, "right": None, "ts": None}
+        self._new_frame_event = threading.Event()
         self._depth_thread = None
+        self._prev_depth   = None
         self._stereo_ready = False
         self._depth_enabled = False
         self._ros_left_info = None
@@ -179,6 +181,7 @@ class CameraPoseDepthForward(Node):
         with self._frame_mutex:
             self._frame_data['left'] = left
             self._frame_data['ts'] = msg.header.stamp
+        self._new_frame_event.set()
 
     def _right_image_callback(self, msg):
         try:
@@ -192,10 +195,13 @@ class CameraPoseDepthForward(Node):
         with self._frame_mutex:
             self._frame_data['right'] = right
             self._frame_data['ts'] = msg.header.stamp
+        self._new_frame_event.set()
 
     def _configure_stereo(self, *, K_left, D_left, K_right, D_right, width, height, R, T, source):
-        # Downscale for performance (matching working reference)
-        scale = 0.5
+        # Higher scale = more pixels = better far-range disparity resolution.
+        # 0.75 gives ~214px focal length vs ~143px at 0.5, nearly doubling
+        # the disparity at every distance (9px at 1.5m instead of 6px).
+        scale = 0.75
 
         # --- Manual half-rotation split (avoiding buggy cv2.fisheye.stereoRectify) ---
         # Split the inter-camera rotation evenly so both cameras rotate
@@ -233,7 +239,8 @@ class CameraPoseDepthForward(Node):
         self._scaled_size = scaled_size
 
         # Vertical offset correction for slight camera misalignment
-        self._warp_M = np.float32([[1, 0, 0], [0, 1, -2]])
+        # (scaled proportionally: was -2 at 0.5×, now -3 at 0.75×)
+        self._warp_M = np.float32([[1, 0, 0], [0, 1, -3]])
 
         # Disparity bounds from depth range
         min_depth = 0.1
@@ -244,7 +251,6 @@ class CameraPoseDepthForward(Node):
         # CLAHE for contrast-boosting low-texture fisheye images
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
-        # SGBM parameters (matched to working reference)
         num_disp = 64
         block_size = 5
         self._stereo = cv2.StereoSGBM_create(
@@ -273,7 +279,7 @@ class CameraPoseDepthForward(Node):
         # Coordinates are in the downscaled frame (424×400 at scale=0.5).
         sw, sh = scaled_size
         self._imx_mask = np.ones((sh, sw), dtype=np.uint8) * 255
-        mask_hw, mask_hh = int(sw * 0.06), int(sh * 0.08)  # half-widths
+        mask_hw, mask_hh = int(sw * 0.03), int(sh * 0.04)  # half-widths
         cx_mask, cy_mask = sw // 2, sh // 2
         self._imx_mask[
             cy_mask - mask_hh : cy_mask + mask_hh,
@@ -295,14 +301,21 @@ class CameraPoseDepthForward(Node):
 
 
     def _depth_worker(self):
+        _frame_count = 0
+        _t0 = time.monotonic()
+
         while rclpy.ok():
             if not self._stereo_ready:
                 time.sleep(0.05)
                 continue
 
+            # Wait for a new frame instead of busy-polling
+            if not self._new_frame_event.wait(timeout=0.1):
+                continue
+            self._new_frame_event.clear()
+
             with self._frame_mutex:
                 if self._frame_data['left'] is None or self._frame_data['right'] is None:
-                    time.sleep(0.01)
                     continue
                 left = self._frame_data['left'].copy()
                 right = self._frame_data['right'].copy()
@@ -348,11 +361,30 @@ class CameraPoseDepthForward(Node):
                     self._focal_len * self._baseline / disp,
                     0.0).astype(np.float32)
 
+            # Temporal smoothing (EMA) to stabilise depth across frames.
+            # alpha=0.3 strongly weights the previous frame, which reduces
+            # jitter at all ranges without introducing spatial artifacts.
+            if self._prev_depth is not None:
+                alpha = 0.3
+                both = (depth > 0) & (self._prev_depth > 0)
+                new_only = (depth > 0) & (self._prev_depth <= 0)
+                depth = np.where(both,
+                                 alpha * depth + (1 - alpha) * self._prev_depth,
+                                 np.where(new_only, depth, self._prev_depth)
+                                 ).astype(np.float32)
+            self._prev_depth = depth.copy()
+
             with self._depth_lock:
                 self._depth_map = depth
 
-                depth_msg = self._numpy_to_image_msg(depth)
-                self.pub_depth_map.publish(depth_msg)
+                # depth_msg = self._numpy_to_image_msg(depth)
+                # self.pub_depth_map.publish(depth_msg)
+
+            _frame_count += 1
+            if _frame_count % 60 == 0:
+                _elapsed = time.monotonic() - _t0
+                _fps = _frame_count / _elapsed if _elapsed > 0 else 0
+                self.get_logger().info(f'Depth rate: {_fps:.1f} Hz ({_frame_count} frames)')
 
 
     def get_depth_at_pixel(self, u: int, v: int) -> Optional[float]:
@@ -374,6 +406,21 @@ class CameraPoseDepthForward(Node):
             depth = float(self._depth_map[v, u])
 
         return depth if depth > 0.0 else None
+
+    def get_depth_at_region(self, u: int, v: int, window: int = 7) -> Optional[float]:
+        """Return median valid depth over a window×window region centred on (u, v)."""
+        half = window // 2
+        with self._depth_lock:
+            if self._depth_map is None:
+                return None
+            h, w = self._depth_map.shape
+            y0, y1 = max(0, v - half), min(h, v + half + 1)
+            x0, x1 = max(0, u - half), min(w, u + half + 1)
+            region = self._depth_map[y0:y1, x0:x1].copy()
+        valid = region[region > 0]
+        if len(valid) == 0:
+            return None
+        return float(np.median(valid))
 
     # -----------------------------------------------------------------------
     # ROS2 pose callback

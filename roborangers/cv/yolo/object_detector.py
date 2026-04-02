@@ -28,7 +28,7 @@ from sensor_msgs.msg import CameraInfo
 from roborangers.realsense import CameraPoseDepthForward
 
 # Scale factor must match realsense.py _configure_stereo
-DEPTH_MAP_SCALE = 0.5
+DEPTH_MAP_SCALE = 0.75
 
 
 class CentroidDepthPublisher(Node):
@@ -62,6 +62,11 @@ class CentroidDepthPublisher(Node):
 
         # Fisheye1 scaled intrinsics (set once from camera_info)
         self._K_fish_scaled = None
+
+        # Temporal smoothing of 3D position
+        self._prev_xyz = None
+        self._ema_alpha = 0.5
+        self._first_detect_logged = False
 
         # --- Subscriptions ---
         self.create_subscription(
@@ -127,8 +132,8 @@ class CentroidDepthPublisher(Node):
         pixel = self._K_fish_scaled @ np.array([nx_fish, ny_fish, 1.0])
         u, v = int(round(pixel[0])), int(round(pixel[1]))
 
-        # 4. Depth lookup via the shared depth node
-        depth = self._depth_node.get_depth_at_pixel(u, v)
+        # 4. Depth lookup via the shared depth node (median over region for stability)
+        depth = self._depth_node.get_depth_at_region(u, v, window=7)
         if depth is None:
             self.get_logger().debug(
                 f'No valid depth at ({u},{v}), skipping.')
@@ -138,6 +143,18 @@ class CentroidDepthPublisher(Node):
         X = nx_fish * depth
         Y = ny_fish * depth
         Z = depth
+
+        if self._prev_xyz is not None:
+            a = self._ema_alpha
+            X = a * X + (1 - a) * self._prev_xyz[0]
+            Y = a * Y + (1 - a) * self._prev_xyz[1]
+            Z = a * Z + (1 - a) * self._prev_xyz[2]
+        self._prev_xyz = (X, Y, Z)
+
+        if not self._first_detect_logged:
+            self._first_detect_logged = True
+            self.get_logger().info(
+                f'First 3D detection: ({X:.3f}, {Y:.3f}, {Z:.3f}) depth={depth:.3f}m')
 
         # 6. Publish PoseStamped
         pose = PoseStamped()
