@@ -11,10 +11,39 @@ Upon creation of a new node, make sure to add it in CMakeLists.txt
 (3) Type `source install/setup.bash`
 
 ## Running
-Package is `roborangers`.
+Package is 
+
+`roborangers`.
 After executing the "Building" steps:
 (1) `ros2 run roborangers realsense.py` or similar
 (2) `ros2 launch roborangers mavros.launch.py` or similar
+
+## YOLOv5 RC-Car Centroid Pipeline (IMX219)
+The package now includes a Jetson-ready detector that runs YOLOv5 ONNX on IMX219 and publishes centroid targets for control.
+
+### Build
+From workspace root:
+(1) `colcon build --symlink-install --packages-select roborangers`
+(2) `source install/setup.bash`
+
+### Standalone detector test
+`python3 roborangers/yolo/imx219_yolov5_onnx.py --model /absolute/path/to/best.onnx --class-names /absolute/path/to/classes.txt --input-size 640 --conf 0.35 --iou 0.45`
+
+### ROS2 centroid node
+`ros2 run roborangers centroid_detector_node.py --ros-args -p model_path:=/absolute/path/to/best.onnx -p class_names_path:=/absolute/path/to/classes.txt -p target_class_name:=rc_car -p display:=true`
+
+### ROS2 launch (recommended)
+`ros2 launch roborangers centroid_detector.launch.py model_path:=/absolute/path/to/best.onnx class_names_path:=/absolute/path/to/classes.txt target_class_name:=rc_car display:=true`
+
+Default parameters are in `launch/centroid_detector_params.yaml`.
+
+Published topics:
+(1) `/vision/target_centroid` (`Float32MultiArray`): `[cx, cy, nx, ny, confidence, class_id]`
+(2) `/vision/target_bbox` (`Float32MultiArray`): `[x1, y1, x2, y2, confidence, class_id]`
+(3) `/vision/target_status` (`String`): `DETECTED` or `LOST`
+
+### Training and export guide
+See `roborangers/yolo/train_rc_car.md` for end-to-end dataset, training, export, and deployment commands.
 
 ## Flight Exercises
 # Flight Exercise 2
@@ -33,3 +62,21 @@ After executing the "Building" steps:
 (3) { in arena } `ros2 launch realsense2_camera rs_launch.py`
 (4) Run ROS node `ros2 run roborangers fe2.py`
 (5)
+
+## How to add new executables to this package
+# Add to CMakeLists.txt
+```bash
+install(PROGRAMS
+  roborangers/path/to/your_script.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+```
+# Make the source script executable
+```bash
+chmod +x ~/ros2_ws/src/ROB498/roborangers/ROB498-roborangers/roborangers/path/to/your_script.py
+```
+# Rebuild 
+```bash
+cd ~/ros2_ws
+colcon build --packages-select roborangers
+```
